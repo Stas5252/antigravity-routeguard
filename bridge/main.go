@@ -364,7 +364,7 @@ func handleClient(client net.Conn, c cfg) {
     }
     _ = client.SetDeadline(time.Time{})
     _ = upstream.SetDeadline(time.Time{})
-    log.Printf("CONNECT %s", target)
+    log.Printf("SOCKS CONNECT established")
 
     // r may already contain bytes beyond the SOCKS request; copy from r rather
     // than directly from client for the client->upstream direction.
@@ -441,7 +441,7 @@ func handleHTTPConnect(client net.Conn, r *bufio.Reader, c cfg) {
         return
     }
     _ = client.SetDeadline(time.Time{})
-    log.Printf("HTTP CONNECT %s", target)
+    log.Printf("HTTP CONNECT established")
 
     var wg sync.WaitGroup
     wg.Add(2)

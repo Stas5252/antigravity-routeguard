@@ -1,5 +1,5 @@
 param(
-  [ValidateSet('Menu','Setup','Repair','Status','Report','Restore','Update','AutoUpdate','Watchdog','Reconfigure')]
+  [ValidateSet('Menu','Setup','Repair','Status','Report','Launch','Restore','Update','AutoUpdate','Watchdog','Reconfigure')]
   [string]$Action = 'Menu'
 )
 
@@ -317,13 +317,50 @@ function Stop-BridgeNow {
   }
 }
 
+function Test-BridgeSocksListener([switch]$Quiet) {
+  $owned=@(Get-BridgeProcess)
+  if($owned.Count -eq 0){ return $false }
+  $ids=@()
+  foreach($p in $owned){
+    if($null -ne $p.ProcessId){ $ids += [int]$p.ProcessId }
+    elseif($null -ne $p.Id){ $ids += [int]$p.Id }
+  }
+  try {
+    $listeners=@(Get-NetTCPConnection -State Listen -LocalPort 17890 -ErrorAction Stop |
+      Where-Object { $ids -contains [int]$_.OwningProcess -and ($_.LocalAddress -eq '127.0.0.1' -or $_.LocalAddress -eq '::1') })
+    if($listeners.Count -gt 0){ return $true }
+  } catch {
+    try {
+      $probe=Test-NetConnection 127.0.0.1 -Port 17890 -WarningAction SilentlyContinue
+      if($probe.TcpTestSucceeded){ return $true }
+    } catch {}
+  }
+  if(-not $Quiet){ Say 'RouteGuard process exists but local SOCKS listener is not ready.' 'Yellow' }
+  return $false
+}
+
 function Start-BridgeNow {
   if(!(Test-Path $ProxyCfg)){ throw 'Proxy is not configured. Run Setup.' }
   if(!(Test-Path $Bridge)){ throw 'agbridge.exe is missing. Run Setup/Repair from a release package.' }
-  if(@(Get-BridgeProcess).Count -gt 0){ return }
+
+  if(@(Get-BridgeProcess).Count -gt 0){
+    for($i=0; $i -lt 5; $i++){
+      if(Test-BridgeSocksListener -Quiet){ return }
+      Start-Sleep -Milliseconds 500
+    }
+    Stop-BridgeNow
+  }
+
   & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $StartBridge
-  Start-Sleep -Milliseconds 900
-  if(@(Get-BridgeProcess).Count -eq 0){ throw 'RouteGuard bridge did not start. Check bridge.err.log.' }
+
+  for($i=0; $i -lt 40; $i++){
+    Start-Sleep -Milliseconds 500
+    if(@(Get-BridgeProcess).Count -eq 0){
+      throw 'RouteGuard bridge exited during startup. Check bridge.err.log.'
+    }
+    if(Test-BridgeSocksListener -Quiet){ return }
+  }
+  throw 'RouteGuard bridge process started but SOCKS listener did not become ready within 20 seconds. Check bridge.err.log.'
 }
 
 function Check-Egress([switch]$Quiet) {
@@ -1061,6 +1098,7 @@ function Do-Setup {
   Start-BridgeNow
   Configure-GateFallback | Out-Null
   Apply-Patch
+  if(-not (Test-PatchCurrent)){ throw 'Post-install verification failed. Run Status/Report before launching Antigravity.' }
   Remove-Item $PendingRepair,$PendingUpdate -Force -ErrorAction SilentlyContinue
   Register-Tasks
   Say 'Setup complete. Launch Antigravity and run Status after the first model request.' 'Green'
@@ -1078,6 +1116,7 @@ function Do-Reconfigure {
   Start-BridgeNow
   Configure-GateFallback | Out-Null
   Apply-Patch
+  if(-not (Test-PatchCurrent)){ throw 'Post-reconfigure verification failed. Run Status/Report.' }
   Remove-Item $PendingRepair -Force -ErrorAction SilentlyContinue
   Register-Tasks
   Say 'Proxy changed, validated against Google/CloudCode, and RouteGuard repaired.' 'Green'
@@ -1096,6 +1135,7 @@ function Do-Repair([switch]$Quiet) {
   Check-GooglePath -Quiet | Out-Null
   if(Test-IsAdmin){ Configure-GateFallback -Quiet:$Quiet | Out-Null }
   Apply-Patch -Quiet:$Quiet
+  if(-not (Test-PatchCurrent)){ throw 'Post-repair verification failed.' }
   Remove-Item $PendingRepair -Force -ErrorAction SilentlyContinue
   Register-Tasks
   if(-not $Quiet){ Say 'Repair complete.' 'Green' }
@@ -1416,6 +1456,27 @@ function Do-Update([switch]$Automatic) {
   }
 }
 
+function Do-Launch {
+  if(@(Get-AntigravityProcesses).Count -gt 0){
+    Say 'Antigravity is already running. Close it first if you need RouteGuard to refresh its inherited environment.' 'Yellow'
+    return
+  }
+  if(!(Test-PatchCurrent)){
+    throw 'RouteGuard patch is stale or incomplete. Run Repair first.'
+  }
+  Start-BridgeNow
+  Check-Egress -Quiet | Out-Null
+  Check-GooglePath -Quiet | Out-Null
+
+  # This process-level value guarantees that the freshly launched Antigravity
+  # and its language_server inherit the private proxy even if Explorer has not
+  # refreshed the persistent user environment yet.
+  $env:AG_LS_PROXY='http://127.0.0.1:17890'
+  $exe=Find-Antigravity
+  Start-Process -FilePath $exe -WorkingDirectory (Split-Path $exe -Parent)
+  Say "Antigravity launched through the RouteGuard environment: $exe" 'Green'
+}
+
 function Do-Report {
   Ensure-Root
   $stamp=Get-Date -Format 'yyyyMMdd-HHmmss'
@@ -1442,7 +1503,7 @@ function Do-Report {
 function Menu {
   Write-Host ''
   Say "AG RouteGuard v$Version" 'Magenta'
-  Write-Host '1) Setup   2) Repair   3) Status   4) Reconfigure proxy   5) Update   6) Restore   7) Report   0) Exit'
+  Write-Host '1) Setup   2) Repair   3) Status   4) Reconfigure proxy   5) Update   6) Restore   7) Report   8) Launch   0) Exit'
   switch(Read-Host 'Choose'){
     '1'{Do-Setup}
     '2'{Do-Repair}
@@ -1451,6 +1512,7 @@ function Menu {
     '5'{Do-Update}
     '6'{Do-Restore}
     '7'{Do-Report}
+    '8'{Do-Launch}
     default{ }
   }
 }
@@ -1460,6 +1522,7 @@ switch($Action){
   'Repair'{Do-Repair}
   'Status'{Do-Status}
   'Report'{Do-Report}
+  'Launch'{Do-Launch}
   'Restore'{Do-Restore}
   'Update'{Do-Update}
   'AutoUpdate'{Do-Update -Automatic}

@@ -100,7 +100,7 @@ RouteGuard does not need Happ/TUN for the Antigravity path. Using a second VPN l
 .\AGRouteGuard.ps1 -Action Restore
 ```
 
-`Status` verifies the upstream egress, Google/CloudCode TLS path, local eligibility patch state, NRPT rules, gate-DNS answers, loopback TCP/443 listeners, live language-server sockets, injector logs, and the newest Antigravity agent log for location/eligibility/proxy errors. You can also double-click `Status.cmd`. `Report.cmd` writes a sanitized diagnostic report to the Desktop without copying the stored proxy password or raw conversation logs.
+`Status` verifies the upstream egress, Google/CloudCode TLS path, local eligibility patch state, NRPT rules, gate-DNS answers, loopback TCP/443 listeners, live language-server sockets, injector logs, and the newest Antigravity agent log for location/eligibility/proxy errors. You can also double-click `Status.cmd`. `Report.cmd` writes a sanitized diagnostic report to the Desktop without copying the stored proxy password or raw conversation logs. `Launch.cmd` starts Antigravity from the RouteGuard process environment so the patched language server definitely inherits `AG_LS_PROXY`, even when Windows Explorer has not refreshed user environment variables yet.
 
 For the full failure-layer model, see `docs/LAYER_MODEL.md`.
 
@@ -139,7 +139,8 @@ See `THIRD_PARTY_NOTICES.md`.
 3. Запусти `Install.cmd`.
 4. Введи адрес, порт, логин и пароль своего **статического SOCKS5**.
 5. Установщик три раза проверит один и тот же выходной IP и отдельно проверит TLS до OAuth + двух CloudCode endpoint'ов.
-6. После установки запусти Antigravity, отправь реальный запрос модели и затем открой `Status.cmd`.
+6. Для первого запуска используй **`Launch.cmd`** — так `AG_LS_PROXY` гарантированно попадёт в новый процесс Antigravity и его language server.
+7. Отправь реальный запрос модели и затем открой `Status.cmd`.
 
 Если Antigravity обновился во время работы, RouteGuard не будет убивать активную задачу ради перепатча: он поставит ремонт в очередь и применит его после закрытия Antigravity.
 
