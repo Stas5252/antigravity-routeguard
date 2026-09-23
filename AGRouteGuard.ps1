@@ -304,17 +304,48 @@ function Patch-IneligibleField($path,[switch]$Quiet) {
   if(!(Test-Path $path)){ return $false }
   $bytes=[IO.File]::ReadAllBytes($path)
   $ascii=[Text.Encoding]::ASCII.GetString($bytes)
+  $latin=[Text.Encoding]::GetEncoding(28591).GetString($bytes)
+  $name=[IO.Path]::GetFileName($path).ToLowerInvariant()
+  $rxOpt=[Text.RegularExpressions.RegexOptions]::Singleline
 
   $needEligibility=$ascii.Contains('ineligible')
   $needProxyVar=$ascii.Contains('https_proxy')
   $hasEligibility=$ascii.Contains('inexigible')
   $hasProxyVar=$ascii.Contains('AG_LS_PROXY')
 
-  if(-not $needEligibility -and -not $needProxyVar){
-    if($hasEligibility -or $hasProxyVar){
+  # Open AG Patcher uses these exact x64 gates for two additional local checks.
+  # We only touch them when the known signature matches; unknown builds are left
+  # alone instead of guessing offsets.
+  $cliPattern="\x48\x85\xc0\x0f\x84....\x80\x78\x08\x00\x0f\x85...."
+  $cliPatched="\x48\x85\xc0\x0f\x84....\x48\x85\xc0\x90\x0f\x85...."
+  $managerPattern="\x80\x78\x08\x00\x74.\x48\x8b.\x24.\x48\x89.\x60"
+  $managerPatched="\xc6\x40\x08\x01\x90\x90\x48\x8b.\x24.\x48\x89.\x60"
+
+  $cliMatches=@()
+  $managerMatches=@()
+  $hasCliGate=$false
+  $hasManagerGate=$false
+
+  if($name -eq 'agy.exe'){
+    $cliMatches=@([regex]::Matches($latin,$cliPattern,$rxOpt))
+    $hasCliGate=[regex]::IsMatch($latin,$cliPatched,$rxOpt)
+  }
+  if($name.StartsWith('language_server')){
+    $managerMatches=@([regex]::Matches($latin,$managerPattern,$rxOpt))
+    $hasManagerGate=[regex]::IsMatch($latin,$managerPatched,$rxOpt)
+  }
+
+  $needCliGate=$cliMatches.Count -gt 0
+  $needManagerGate=$managerMatches.Count -eq 1
+  $managerAmbiguous=$managerMatches.Count -gt 1
+
+  $anyChange=$needEligibility -or $needProxyVar -or $needCliGate -or $needManagerGate
+  if(-not $anyChange){
+    if($hasEligibility -or $hasProxyVar -or $hasCliGate -or $hasManagerGate){
       if(-not $Quiet){ Say "Client binary gates already patched: $path" 'DarkGreen' }
       return $true
     }
+    if($managerAmbiguous -and -not $Quiet){ Say "Manager auth signature is not unique; refusing to guess: $path" 'Yellow' }
     return $false
   }
 
@@ -347,6 +378,20 @@ function Patch-IneligibleField($path,[switch]$Quiet) {
       $pos=$idx+11
     }
     $changes += "https_proxy->AG_LS_PROXY x$count"
+  }
+
+  if($needCliGate){
+    $fix=[byte[]](0x48,0x85,0xc0,0x90)
+    foreach($m in $cliMatches){ [Array]::Copy($fix,0,$bytes,$m.Index+9,$fix.Length) }
+    $changes += "agy eligibility gate x$($cliMatches.Count)"
+  }
+
+  if($needManagerGate){
+    $fix=[byte[]](0xc6,0x40,0x08,0x01,0x90,0x90)
+    [Array]::Copy($fix,0,$bytes,$managerMatches[0].Index,$fix.Length)
+    $changes += 'language_server hasValidAuth=true'
+  } elseif($managerAmbiguous -and -not $Quiet) {
+    Say "Manager auth signature is not unique; skipped machine-code gate: $path" 'Yellow'
   }
 
   Write-BytesAtomic $path $bytes
