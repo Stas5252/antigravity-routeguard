@@ -287,6 +287,44 @@ function Remove-GateNrpt {
   Clear-DnsClientCache -ErrorAction SilentlyContinue
 }
 
+function Get-BridgePids {
+  $ids=@()
+  foreach($p in @(Get-BridgeProcess)){
+    if($null -ne $p.ProcessId){ $ids += [int]$p.ProcessId }
+    elseif($null -ne $p.Id){ $ids += [int]$p.Id }
+  }
+  return @($ids | Select-Object -Unique)
+}
+
+function Test-GateListeners([switch]$Quiet) {
+  $pids=@(Get-BridgePids)
+  if($pids.Count -eq 0){
+    if(-not $Quiet){ Say 'Gate listeners: RouteGuard bridge is not running.' 'Red' }
+    return $false
+  }
+
+  $ok=$true
+  try {
+    $listeners=@(Get-NetTCPConnection -State Listen -LocalPort 443 -ErrorAction Stop)
+    foreach($host in $GateMap.Keys){
+      $ip=[string]$GateMap[$host]
+      $owned=@($listeners | Where-Object {
+        $_.LocalAddress -eq $ip -and $pids -contains [int]$_.OwningProcess
+      })
+      if($owned.Count -eq 0){
+        $ok=$false
+        if(-not $Quiet){ Say "Gate listener missing/not owned by RouteGuard: ${ip}:443 ($host)" 'Red' }
+      } elseif(-not $Quiet){
+        Say "Gate listener owned by RouteGuard: ${ip}:443 ($host)" 'Green'
+      }
+    }
+  } catch {
+    if(-not $Quiet){ Say "Gate listener ownership check failed: $($_.Exception.Message)" 'Yellow' }
+    return $false
+  }
+  return $ok
+}
+
 function Test-GateDns {
   $ok=$true
   foreach($host in $GateMap.Keys){
@@ -827,6 +865,7 @@ function Do-Setup {
   Save-ProxyValidated
   Stop-Process -Name agbridge -Force -ErrorAction SilentlyContinue
   Start-BridgeNow
+  if(-not (Test-GateListeners)){ throw 'CloudCode gate listeners are not owned by RouteGuard. Another local service may be using a required loopback port.' }
   Ensure-GateNrpt | Out-Null
   if(-not (Test-GateDns)){ throw 'Gate DNS self-test failed. Do not launch Antigravity until Status is green.' }
   Apply-Patch
@@ -843,6 +882,7 @@ function Do-Reconfigure {
   Save-ProxyValidated
   Stop-Process -Name agbridge -Force -ErrorAction SilentlyContinue
   Start-BridgeNow
+  if(-not (Test-GateListeners)){ throw 'CloudCode gate listeners are not owned by RouteGuard after proxy change.' }
   Ensure-GateNrpt | Out-Null
   if(-not (Test-GateDns)){ throw 'Gate DNS self-test failed after proxy change.' }
   Apply-Patch
@@ -860,6 +900,7 @@ function Do-Repair([switch]$Quiet) {
   if(Test-Path (Join-Path $PSScriptRoot 'agbridge.exe')){ Install-Files }
   Stop-Process -Name agbridge -Force -ErrorAction SilentlyContinue
   Start-BridgeNow
+  if(-not (Test-GateListeners -Quiet)){ throw 'CloudCode gate listeners are unavailable.' }
   Check-Egress -Quiet | Out-Null
   Check-GooglePath -Quiet | Out-Null
   if(Test-IsAdmin){ Ensure-GateNrpt -Quiet | Out-Null }
@@ -1040,14 +1081,7 @@ function Do-Status {
 
   if(Get-Process agbridge -ErrorAction SilentlyContinue){ Test-GateDns | Out-Null }
 
-  foreach($host in $GateMap.Keys){
-    $ip=$GateMap[$host]
-    try {
-      $tcp=Test-NetConnection $ip -Port 443 -WarningAction SilentlyContinue
-      $tcpColor=if($tcp.TcpTestSucceeded){'Green'}else{'Red'}
-      Say "Gate TCP $host via $($ip):443 = $($tcp.TcpTestSucceeded)" $tcpColor
-    } catch {}
-  }
+  Test-GateListeners | Out-Null
 
   $loc=Get-Location400Status
   if($loc){
