@@ -623,10 +623,40 @@ function Do-Watchdog {
   }
 }
 
+function Show-CompetingProxySettings {
+  $ours='http://127.0.0.1:17890'
+  $ag=[Environment]::GetEnvironmentVariable('AG_LS_PROXY','User')
+  if($ag -eq $ours){ Say 'Private AG_LS_PROXY channel: RouteGuard' 'Green' }
+  elseif($ag){ Say 'Private AG_LS_PROXY channel is set by something else.' 'Yellow' }
+  else { Say 'Private AG_LS_PROXY channel is not set.' 'Yellow' }
+
+  foreach($name in @('HTTPS_PROXY','HTTP_PROXY','ALL_PROXY')){
+    $u=[Environment]::GetEnvironmentVariable($name,'User')
+    $m=[Environment]::GetEnvironmentVariable($name,'Machine')
+    if($u){ Say "$name is set in User environment (RouteGuard leaves it untouched)." 'Yellow' }
+    if($m){ Say "$name is set in Machine environment (RouteGuard leaves it untouched)." 'Yellow' }
+  }
+
+  foreach($base in @('Antigravity','Antigravity IDE')){
+    $settings=Join-Path $env:APPDATA "$base\User\settings.json"
+    if(!(Test-Path $settings)){ continue }
+    try {
+      $raw=Get-Content $settings -Raw -Encoding UTF8
+      if($raw -match '"http\.proxy"\s*:'){
+        Say "$base settings.json contains http.proxy; it can create a second proxy path." 'Yellow'
+      }
+      if($raw -match '"jetski\.cloudCodeUrl"\s*:'){
+        Say "$base settings.json contains jetski.cloudCodeUrl; endpoint override detected." 'Yellow'
+      }
+    } catch {}
+  }
+}
+
 function Do-Status {
   Say "AG RouteGuard v$Version" 'Magenta'
   Say "Bridge process: $([bool](Get-Process agbridge -ErrorAction SilentlyContinue))" 'Cyan'
   Say "Patch current: $(Test-PatchCurrent)" 'Cyan'
+  Show-CompetingProxySettings
   if(Test-Path $ProxyCfg){
     try { Check-Egress | Out-Null } catch { Say $_.Exception.Message 'Red' }
   } else { Say 'Proxy not configured.' 'Yellow' }
