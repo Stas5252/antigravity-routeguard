@@ -209,7 +209,7 @@ function Test-GateDns {
       $ans=Resolve-DnsName $host -Type A -Server $GateDns -DnsOnly -QuickTimeout -ErrorAction Stop |
         Where-Object { $_.IPAddress } | Select-Object -First 1
       $got=[string]$ans.IPAddress
-      if($got -ne $expected){ $ok=$false; Say "Gate DNS $host: expected $expected, got $got" 'Red' }
+      if($got -ne $expected){ $ok=$false; Say "Gate DNS ${host}: expected $expected, got $got" 'Red' }
       else { Say "Gate DNS $host -> $got" 'Green' }
     } catch {
       $ok=$false
