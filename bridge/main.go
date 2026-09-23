@@ -658,28 +658,60 @@ func probeGoogle(c cfg) error {
 }
 
 func checkIP(c cfg) (string, error) {
-    raw, err := dialViaUpstream(c, "api.ipify.org", 443)
+    probes := []struct {
+        host string
+        path string
+    }{
+        {"api.ipify.org", "/"},
+        {"ifconfig.me", "/ip"},
+        {"icanhazip.com", "/"},
+    }
+
+    var errs []string
+    for _, p := range probes {
+        ip, err := checkIPVia(c, p.host, p.path)
+        if err == nil {
+            return ip, nil
+        }
+        errs = append(errs, p.host+": "+err.Error())
+    }
+    return "", fmt.Errorf("all egress IP probes failed: %s", strings.Join(errs, "; "))
+}
+
+func checkIPVia(c cfg, host, path string) (string, error) {
+    raw, err := dialViaUpstream(c, host, 443)
     if err != nil {
         return "", err
     }
     defer raw.Close()
 
-    tlsConn := tls.Client(raw, &tls.Config{ServerName: "api.ipify.org", MinVersion: tls.VersionTLS12})
+    tlsConn := tls.Client(raw, &tls.Config{ServerName: host, MinVersion: tls.VersionTLS12})
+    _ = tlsConn.SetDeadline(time.Now().Add(15 * time.Second))
     if err := tlsConn.Handshake(); err != nil {
         return "", err
     }
-    if _, err := io.WriteString(tlsConn, "GET / HTTP/1.1\r\nHost: api.ipify.org\r\nConnection: close\r\nUser-Agent: AGRouteGuard/0.4\r\n\r\n"); err != nil {
+    req := fmt.Sprintf("GET %s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\nUser-Agent: AGRouteGuard/0.4\r\nAccept: text/plain\r\n\r\n", path, host)
+    if _, err := io.WriteString(tlsConn, req); err != nil {
         return "", err
     }
-    b, err := io.ReadAll(tlsConn)
+    b, err := io.ReadAll(io.LimitReader(tlsConn, 64*1024))
     if err != nil {
         return "", err
     }
     parts := strings.SplitN(string(b), "\r\n\r\n", 2)
     if len(parts) != 2 {
-        return "", errors.New("unexpected ipify response")
+        return "", errors.New("unexpected HTTP response")
     }
-    return strings.TrimSpace(parts[1]), nil
+    body := strings.TrimSpace(parts[1])
+    // Keep only the first token/line. Public IP services may include a final LF.
+    if fields := strings.Fields(body); len(fields) > 0 {
+        body = fields[0]
+    }
+    ip := net.ParseIP(body)
+    if ip == nil {
+        return "", fmt.Errorf("response is not an IP address: %q", body)
+    }
+    return ip.String(), nil
 }
 
 // ---- Minimal authoritative DNS for the two gate names ----
