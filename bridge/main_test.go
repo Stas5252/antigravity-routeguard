@@ -378,3 +378,17 @@ func TestValidateConfigLoopback(t *testing.T) {
         t.Fatal("invalid upstream port must be rejected")
     }
 }
+
+
+func TestLocalTargetAllowed(t *testing.T) {
+    for _, target := range []string{"example.com:443", "127.0.0.1:80", "[::1]:443"} {
+        if !localTargetAllowed(target) {
+            t.Fatalf("expected allowed target: %s", target)
+        }
+    }
+    for _, target := range []string{"example.com:22", "example.com:8080", "bad-target"} {
+        if localTargetAllowed(target) {
+            t.Fatalf("expected blocked target: %s", target)
+        }
+    }
+}
