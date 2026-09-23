@@ -1,6 +1,6 @@
 # AG RouteGuard
 
-AG RouteGuard is a Windows-only Antigravity compatibility/unlock layer. Current release line: **0.4.x**. It handles **local eligibility checks, CloudCode gate routing, authenticated SOCKS5 egress, leak prevention, diagnostics, rollback, and auto-repair after Antigravity updates.**
+AG RouteGuard is a Windows-only Antigravity compatibility/unlock layer. Current release line: **0.4.1**. It handles **local eligibility checks, CloudCode gate routing, authenticated SOCKS5 egress, leak prevention, diagnostics, rollback, and auto-repair after Antigravity updates.**
 
 ## Why this exists
 
@@ -52,12 +52,12 @@ For the gate fallback, Windows NRPT points only `cloudcode-pa.googleapis.com` an
 - stores the upstream password using Windows DPAPI for the current Windows user;
 - verifies the real proxy egress three times before patching and rejects rotating/changing egress;
 - verifies TLS connectivity through that same proxy to `oauth2.googleapis.com`, `cloudcode-pa.googleapis.com`, and `daily-cloudcode-pa.googleapis.com` before Setup/Repair;
-- patches the known IDE `isGoogleInternal` local gate when its exact pattern is present;
+- patches the known IDE `isGoogleInternal` local gate when its exact pattern is present and includes that IDE state in watchdog/post-install verification;
 - patches the language-server/CLI eligibility field with the same-length `ineligible -> inexigible` rewrite used by current unlockers;
 - installs tagged NRPT rules only for the two CloudCode gate hosts and answers their AAAA queries with NODATA to prevent an IPv6 escape;
 - keeps backups and supports Restore;
 - starts the bridge at Windows logon;
-- runs a watchdog every 5 minutes: if an Antigravity update removes/replaces the hook, RouteGuard marks a repair pending while Antigravity is running and applies it only after Antigravity is closed, so an active agent run is not killed;
+- runs a watchdog every 5 minutes: it checks the hook, config, native eligibility state, IDE local gate, and private `AG_LS_PROXY` channel; if an Antigravity update removes/replaces a known patch, RouteGuard marks a repair pending while Antigravity is running and applies it only after Antigravity is closed, so an active agent run is not killed;
 - checks the rolling RouteGuard release periodically, verifies `SHA256SUMS.txt`, and auto-updates only while Antigravity is closed; otherwise the update is deferred safely;
 - can self-update from GitHub Releases and verifies the release ZIP against `SHA256SUMS.txt` before installing;
 - shows whether the newest Antigravity `ls-main.log` still contains the Google location-400 error;

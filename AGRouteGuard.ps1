@@ -6,7 +6,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
-$Version = '0.4.0'
+$Version = '0.4.1'
 $Repo = 'Stas5252/antigravity-routeguard'
 $Root = Join-Path $env:LOCALAPPDATA 'AGRouteGuard'
 $BackupDir = Join-Path $Root 'backups'
@@ -924,6 +924,33 @@ function Patch-IdeMainJs($installDir,[switch]$Quiet) {
   return $patched
 }
 
+function Get-IdeMainJsState($installDir) {
+  $results=@()
+  $paths=@(
+    (Join-Path $installDir 'resources\app\out\main.js'),
+    (Join-Path $installDir 'resources\app\main.js')
+  )
+  $pattern='(resetIsTierGCPTos\(\),)this\.[A-Za-z_$0-9]+\.isGoogleInternal'
+  $done='resetIsTierGCPTos(),true'
+
+  foreach($path in $paths){
+    if(!(Test-Path -LiteralPath $path)){ continue }
+    try {
+      $text=Get-Content -LiteralPath $path -Raw -Encoding UTF8
+      $stock=@([regex]::Matches($text,$pattern)).Count
+      $patched=([regex]::Matches($text,[regex]::Escape($done))).Count
+      $state='unknown'
+      if($stock -eq 1 -and $patched -eq 0){ $state='unpatched' }
+      elseif($stock -eq 0 -and $patched -eq 1){ $state='patched' }
+      elseif($stock -gt 0 -or $patched -gt 0){ $state='ambiguous' }
+      $results += [pscustomobject]@{ path=$path; state=$state; stock=$stock; patched=$patched }
+    } catch {
+      $results += [pscustomobject]@{ path=$path; state='unreadable'; stock=0; patched=0 }
+    }
+  }
+  return $results
+}
+
 function Get-EligibilityTargets($installDir) {
   $out=@()
   foreach($p in @(
@@ -1033,6 +1060,12 @@ function Test-PatchCurrent {
       ($_.stockProxy -and -not $_.privateProxy) -or
       ($_.machineGate -eq 'unpatched')
     }).Count -gt 0){ return $false }
+
+    $ide=@(Get-IdeMainJsState $dir)
+    if(@($ide | Where-Object { $_.state -eq 'unpatched' }).Count -gt 0){ return $false }
+
+    $private=[Environment]::GetEnvironmentVariable('AG_LS_PROXY','User')
+    if($private -ne 'http://127.0.0.1:17890'){ return $false }
     return $true
   } catch { return $false }
 }
@@ -1303,6 +1336,10 @@ function Do-Status {
       if($e.machineGate -eq 'patched'){ Say "  machine gate: patched" 'Green' }
       elseif($e.machineGate -eq 'unpatched'){ Say "  machine gate: known + unpatched" 'Red' }
       elseif($e.machineGate -in @('unknown','ambiguous')){ Say "  machine gate: $($e.machineGate) (left untouched; no offset guessing)" 'Yellow' }
+    }
+    foreach($j in @(Get-IdeMainJsState $dir)){
+      $jColor=if($j.state -eq 'patched'){'Green'}elseif($j.state -eq 'unpatched'){'Red'}else{'Yellow'}
+      Say "IDE account-region gate: $($j.state) : $($j.path)" $jColor
     }
   } catch { Say $_.Exception.Message 'Red' }
 
