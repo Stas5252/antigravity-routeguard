@@ -77,7 +77,7 @@ function Get-InstallDir {
 
 function Get-AntigravityProcesses {
   return @(Get-Process -ErrorAction SilentlyContinue | Where-Object {
-    $_.ProcessName -like 'Antigravity*' -or $_.ProcessName -like 'language_server*'
+    $_.ProcessName -like 'Antigravity*' -or $_.ProcessName -like 'language_server*' -or $_.ProcessName -eq 'agy'
   })
 }
 
@@ -196,7 +196,7 @@ function Start-BridgeNow {
   if(@(Get-BridgeProcess).Count -gt 0){ return }
   & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $StartBridge
   Start-Sleep -Milliseconds 900
-  if(@(Get-BridgeProcess).Count -eq 0){ throw 'RouteGuard bridge did not start. Check bridge.log.' }
+  if(@(Get-BridgeProcess).Count -eq 0){ throw 'RouteGuard bridge did not start. Check bridge.err.log.' }
 }
 
 function Check-Egress([switch]$Quiet) {
@@ -686,6 +686,7 @@ function Do-Setup {
   Assert-AntigravityClosed
   Install-Files
   Save-ProxyValidated
+  Stop-Process -Name agbridge -Force -ErrorAction SilentlyContinue
   Start-BridgeNow
   Ensure-GateNrpt | Out-Null
   if(-not (Test-GateDns)){ throw 'Gate DNS self-test failed. Do not launch Antigravity until Status is green.' }
@@ -718,6 +719,7 @@ function Do-Repair([switch]$Quiet) {
     return
   }
   if(Test-Path (Join-Path $PSScriptRoot 'agbridge.exe')){ Install-Files }
+  Stop-Process -Name agbridge -Force -ErrorAction SilentlyContinue
   Start-BridgeNow
   Check-Egress -Quiet | Out-Null
   Check-GooglePath -Quiet | Out-Null
@@ -815,16 +817,18 @@ function Show-BridgeDiagnostics {
   try {
     $tail=@(Get-Content $log -Tail 300 -ErrorAction Stop)
     $pin=@($tail | Where-Object { $_ -match 'pinned upstream egress:' })
-    $changed=@($tail | Where-Object { $_ -match 'EGRESS CHANGED:' })
+    $blocked=@($tail | Where-Object { $_ -match 'EGRESS CHANGED:|EGRESS UNVERIFIED:' })
     $restored=@($tail | Where-Object { $_ -match 'egress restored:' })
     if($pin.Count -gt 0){ Say ([string]$pin[-1]) 'Cyan' }
-    if($changed.Count -gt 0){
-      $lastChange=[string]$changed[-1]
+    if($blocked.Count -gt 0){
+      $lastBlocked=[string]$blocked[-1]
       $lastRestore=if($restored.Count -gt 0){[string]$restored[-1]}else{''}
-      if($lastRestore -and $tail.IndexOf($lastRestore) -gt $tail.IndexOf($lastChange)){
-        Say 'Bridge egress changed earlier but was restored.' 'Yellow'
+      $blockedIndex=[Array]::LastIndexOf([object[]]$tail,$lastBlocked)
+      $restoreIndex=if($lastRestore){[Array]::LastIndexOf([object[]]$tail,$lastRestore)}else{-1}
+      if($restoreIndex -gt $blockedIndex){
+        Say 'Bridge egress safety gate triggered earlier but the expected IP was restored.' 'Yellow'
       } else {
-        Say "Bridge FAIL-CLOSED because egress changed: $lastChange" 'Red'
+        Say "Bridge FAIL-CLOSED: $lastBlocked" 'Red'
       }
     }
   } catch {}
