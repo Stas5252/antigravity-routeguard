@@ -30,6 +30,10 @@ jobs:
             [void][scriptblock]::Create((Get-Content $_.FullName -Raw))
           }
 
+      - name: Test eligibility signatures
+        shell: pwsh
+        run: ./tests/eligibility-signatures.ps1
+
       - name: Test, vet and build authenticated SOCKS bridge
         shell: pwsh
         run: |
