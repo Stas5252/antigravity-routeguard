@@ -455,26 +455,33 @@ function Remove-Tasks {
 }
 
 function Get-LatestLsLog {
-  $roots = @(
+  $roots=@(
     (Join-Path $env:APPDATA 'Antigravity\logs'),
     (Join-Path $env:APPDATA 'Antigravity IDE\logs')
   )
+  $candidates=@()
   foreach($root in $roots){
     if(Test-Path $root){
-      $hit = Get-ChildItem $root -Filter 'ls-main.log' -Recurse -File -ErrorAction SilentlyContinue |
-        Sort-Object LastWriteTime -Descending | Select-Object -First 1
-      if($hit){ return $hit.FullName }
+      $candidates += @(Get-ChildItem $root -Filter 'ls-main.log' -Recurse -File -ErrorAction SilentlyContinue)
+      $candidates += @(Get-ChildItem $root -Filter 'language_server.log' -Recurse -File -ErrorAction SilentlyContinue)
     }
   }
+  $hit=$candidates | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+  if($hit){ return $hit.FullName }
   return $null
 }
 
 function Get-Location400Status {
-  $log = Get-LatestLsLog
+  $log=Get-LatestLsLog
   if(!$log){ return $null }
   try {
-    $tail = Get-Content $log -Tail 400 -ErrorAction Stop | Out-String
-    [pscustomobject]@{ path=$log; hit=($tail -match 'User location is not supported for the API use') }
+    $tail=Get-Content $log -Tail 600 -ErrorAction Stop | Out-String
+    [pscustomobject]@{
+      path=$log
+      location400=($tail -match 'User location is not supported for the API use')
+      accountIneligible=($tail -match 'not eligible|eligibility')
+      proxyBypass=($tail -match 'proxyconnect|connectex|connection refused')
+    }
   } catch { return $null }
 }
 
