@@ -162,6 +162,14 @@ func handleClient(client net.Conn, c cfg) {
     defer client.Close()
     _ = client.SetDeadline(time.Now().Add(20 * time.Second))
     r := bufio.NewReader(client)
+    first, err := r.Peek(1)
+    if err != nil {
+        return
+    }
+    if first[0] != 0x05 {
+        handleHTTPConnect(client, r, c)
+        return
+    }
 
     // Local side: SOCKS5 no-auth server. Only loopback can reach it.
     hdr := make([]byte, 2)
@@ -235,6 +243,70 @@ func handleClient(client net.Conn, c cfg) {
 
     // r may already contain bytes beyond the SOCKS request; copy from r rather
     // than directly from client for the client->upstream direction.
+    var wg sync.WaitGroup
+    wg.Add(2)
+    go func() {
+        defer wg.Done()
+        _, _ = io.Copy(upstream, r)
+    }()
+    go func() {
+        defer wg.Done()
+        _, _ = io.Copy(client, upstream)
+    }()
+    wg.Wait()
+}
+
+func handleHTTPConnect(client net.Conn, r *bufio.Reader, c cfg) {
+    line, err := r.ReadString('\n')
+    if err != nil {
+        return
+    }
+    parts := strings.Fields(strings.TrimSpace(line))
+    if len(parts) < 3 || !strings.EqualFold(parts[0], "CONNECT") {
+        _, _ = io.WriteString(client, "HTTP/1.1 405 Method Not Allowed\r\nConnection: close\r\n\r\n")
+        return
+    }
+    target := parts[1]
+    host, portText, err := net.SplitHostPort(target)
+    if err != nil {
+        // CONNECT commonly omits brackets only for hostname:port. Require a
+        // real port instead of guessing, because this proxy is only for the
+        // language server's HTTPS path.
+        _, _ = io.WriteString(client, "HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n")
+        return
+    }
+    p64, err := strconv.ParseUint(portText, 10, 16)
+    if err != nil || p64 == 0 {
+        _, _ = io.WriteString(client, "HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n")
+        return
+    }
+
+    // Consume CONNECT headers, but do not interpret or log credentials/tokens.
+    for {
+        h, err := r.ReadString('\n')
+        if err != nil {
+            return
+        }
+        if h == "\r\n" || h == "\n" {
+            break
+        }
+        if len(h) > 8192 {
+            return
+        }
+    }
+
+    upstream, err := dialViaUpstream(c, host, uint16(p64))
+    if err != nil {
+        _, _ = io.WriteString(client, "HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n")
+        return
+    }
+    defer upstream.Close()
+    if _, err := io.WriteString(client, "HTTP/1.1 200 Connection Established\r\n\r\n"); err != nil {
+        return
+    }
+    _ = client.SetDeadline(time.Time{})
+    log.Printf("HTTP CONNECT %s", target)
+
     var wg sync.WaitGroup
     wg.Add(2)
     go func() {
