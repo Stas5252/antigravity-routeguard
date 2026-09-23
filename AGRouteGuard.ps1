@@ -304,27 +304,68 @@ function Patch-IneligibleField($path,[switch]$Quiet) {
   if(!(Test-Path $path)){ return $false }
   $bytes=[IO.File]::ReadAllBytes($path)
   $ascii=[Text.Encoding]::ASCII.GetString($bytes)
-  if($ascii.Contains('inexigible')){
-    if(-not $Quiet){ Say "Eligibility field already patched: $path" 'DarkGreen' }
-    return $true
-  }
-  if(-not $ascii.Contains('ineligible')){ return $false }
 
-  $meta=Save-PatchBackup $path 'ineligible-field'
-  $to=[Text.Encoding]::ASCII.GetBytes('inexigible')
-  $pos=0
-  $count=0
-  while($true){
-    $idx=$ascii.IndexOf('ineligible',$pos,[StringComparison]::Ordinal)
-    if($idx -lt 0){ break }
-    [Array]::Copy($to,0,$bytes,$idx,$to.Length)
-    $count++
-    $pos=$idx+10
+  $needEligibility=$ascii.Contains('ineligible')
+  $needProxyVar=$ascii.Contains('https_proxy')
+  $hasEligibility=$ascii.Contains('inexigible')
+  $hasProxyVar=$ascii.Contains('AG_LS_PROXY')
+
+  if(-not $needEligibility -and -not $needProxyVar){
+    if($hasEligibility -or $hasProxyVar){
+      if(-not $Quiet){ Say "Client binary gates already patched: $path" 'DarkGreen' }
+      return $true
+    }
+    return $false
   }
+
+  $meta=Save-PatchBackup $path 'client-binary-gates'
+  $changes=@()
+
+  if($needEligibility){
+    $to=[Text.Encoding]::ASCII.GetBytes('inexigible')
+    $pos=0
+    $count=0
+    while($true){
+      $idx=$ascii.IndexOf('ineligible',$pos,[StringComparison]::Ordinal)
+      if($idx -lt 0){ break }
+      [Array]::Copy($to,0,$bytes,$idx,$to.Length)
+      $count++
+      $pos=$idx+10
+    }
+    $changes += "ineligible->inexigible x$count"
+  }
+
+  if($needProxyVar){
+    $to=[Text.Encoding]::ASCII.GetBytes('AG_LS_PROXY')
+    $pos=0
+    $count=0
+    while($true){
+      $idx=$ascii.IndexOf('https_proxy',$pos,[StringComparison]::Ordinal)
+      if($idx -lt 0){ break }
+      [Array]::Copy($to,0,$bytes,$idx,$to.Length)
+      $count++
+      $pos=$idx+11
+    }
+    $changes += "https_proxy->AG_LS_PROXY x$count"
+  }
+
   Write-BytesAtomic $path $bytes
   Finish-PatchBackup $meta $path
-  if(-not $Quiet){ Say "Eligibility/account client gate patched ($count occurrence(s)): $path" 'Green' }
+  if(-not $Quiet){ Say "Client binary patched ($($changes -join '; ')): $path" 'Green' }
   return $true
+}
+
+function Ensure-PrivateProxyEnv {
+  $value='http://127.0.0.1:17890'
+  [Environment]::SetEnvironmentVariable('AG_LS_PROXY',$value,'User')
+  $env:AG_LS_PROXY=$value
+}
+
+function Remove-PrivateProxyEnv {
+  $ours='http://127.0.0.1:17890'
+  $cur=[Environment]::GetEnvironmentVariable('AG_LS_PROXY','User')
+  if($cur -eq $ours){ [Environment]::SetEnvironmentVariable('AG_LS_PROXY',$null,'User') }
+  if($env:AG_LS_PROXY -eq $ours){ Remove-Item Env:AG_LS_PROXY -ErrorAction SilentlyContinue }
 }
 
 function Patch-IdeMainJs($installDir,[switch]$Quiet) {
