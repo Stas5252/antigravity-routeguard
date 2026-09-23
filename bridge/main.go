@@ -204,7 +204,7 @@ func serveGate(ln net.Listener, c cfg, host string) {
             if !egressAllowed() {
                 return
             }
-            upstream, err := dialViaUpstream(c, host, 443)
+            upstream, err := dialViaUpstreamRetry(c, host, 443, 3)
             if err != nil {
                 log.Printf("gate %s upstream: %v", host, err)
                 return
@@ -289,31 +289,13 @@ func handleClient(client net.Conn, c cfg) {
         return
     }
 
-    upstream, err := net.DialTimeout("tcp", net.JoinHostPort(c.UpstreamHost, c.UpstreamPort), 12*time.Second)
+    upstream, err := dialRawViaUpstreamRetry(c, reqHead[3], rawAddr, 3)
     if err != nil {
+        log.Printf("CONNECT %s upstream failed after retries: %v", target, err)
         writeReply(client, 0x04)
         return
     }
     defer upstream.Close()
-    _ = upstream.SetDeadline(time.Now().Add(20 * time.Second))
-
-    if err := upstreamHandshake(upstream, c.Username, c.Password); err != nil {
-        writeReply(client, 0x01)
-        return
-    }
-    if _, err := upstream.Write(append([]byte{5, 1, 0}, append([]byte{reqHead[3]}, rawAddr...)...)); err != nil {
-        writeReply(client, 0x01)
-        return
-    }
-    rep, err := readUpstreamReply(upstream)
-    if err != nil {
-        writeReply(client, 0x01)
-        return
-    }
-    if rep != 0x00 {
-        writeReply(client, rep)
-        return
-    }
 
     if _, err := client.Write([]byte{5, 0, 0, 1, 0, 0, 0, 0, 0, 0}); err != nil {
         return
@@ -376,7 +358,7 @@ func handleHTTPConnect(client net.Conn, r *bufio.Reader, c cfg) {
         }
     }
 
-    upstream, err := dialViaUpstream(c, host, uint16(p64))
+    upstream, err := dialViaUpstreamRetry(c, host, uint16(p64), 3)
     if err != nil {
         _, _ = io.WriteString(client, "HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n")
         return
@@ -514,6 +496,70 @@ func readUpstreamReply(conn net.Conn) (byte, error) {
 
 func writeReply(conn net.Conn, rep byte) {
     _, _ = conn.Write([]byte{5, rep, 0, 1, 0, 0, 0, 0, 0, 0})
+}
+
+func dialRawViaUpstream(c cfg, atyp byte, rawAddr []byte) (net.Conn, error) {
+    conn, err := net.DialTimeout("tcp", net.JoinHostPort(c.UpstreamHost, c.UpstreamPort), 12*time.Second)
+    if err != nil {
+        return nil, err
+    }
+    ok := false
+    defer func() {
+        if !ok {
+            _ = conn.Close()
+        }
+    }()
+    _ = conn.SetDeadline(time.Now().Add(20 * time.Second))
+
+    if err := upstreamHandshake(conn, c.Username, c.Password); err != nil {
+        return nil, err
+    }
+    req := []byte{5, 1, 0, atyp}
+    req = append(req, rawAddr...)
+    if _, err := conn.Write(req); err != nil {
+        return nil, err
+    }
+    rep, err := readUpstreamReply(conn)
+    if err != nil {
+        return nil, err
+    }
+    if rep != 0 {
+        return nil, fmt.Errorf("upstream CONNECT failed with code %d", rep)
+    }
+    _ = conn.SetDeadline(time.Time{})
+    ok = true
+    return conn, nil
+}
+
+func dialRawViaUpstreamRetry(c cfg, atyp byte, rawAddr []byte, attempts int) (net.Conn, error) {
+    if attempts < 1 {
+        attempts = 1
+    }
+    var last error
+    for i := 0; i < attempts; i++ {
+        conn, err := dialRawViaUpstream(c, atyp, rawAddr)
+        if err == nil {
+            return conn, nil
+        }
+        last = err
+        if i+1 < attempts {
+            time.Sleep(time.Duration(150*(i+1)) * time.Millisecond)
+        }
+    }
+    return nil, last
+}
+
+func dialViaUpstreamRetry(c cfg, host string, port uint16, attempts int) (net.Conn, error) {
+    hb := []byte(host)
+    if len(hb) > 255 {
+        return nil, errors.New("hostname too long")
+    }
+    raw := []byte{byte(len(hb))}
+    raw = append(raw, hb...)
+    p := make([]byte, 2)
+    binary.BigEndian.PutUint16(p, port)
+    raw = append(raw, p...)
+    return dialRawViaUpstreamRetry(c, 3, raw, attempts)
 }
 
 func dialViaUpstream(c cfg, host string, port uint16) (net.Conn, error) {
