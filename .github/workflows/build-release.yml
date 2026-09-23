@@ -25,13 +25,16 @@ jobs:
       - name: Validate PowerShell syntax
         shell: pwsh
         run: |
-          [void][scriptblock]::Create((Get-Content AGRouteGuard.ps1 -Raw))
-          [void][scriptblock]::Create((Get-Content scripts/Start-Bridge.ps1 -Raw))
+          Get-ChildItem -Recurse -Filter '*.ps1' | ForEach-Object {
+            Write-Host "Parsing $($_.FullName)"
+            [void][scriptblock]::Create((Get-Content $_.FullName -Raw))
+          }
 
-      - name: Test and build authenticated SOCKS bridge
+      - name: Test, vet and build authenticated SOCKS bridge
         shell: pwsh
         run: |
           go test ./...
+          go vet ./...
           New-Item -ItemType Directory -Force dist | Out-Null
           go build -trimpath -ldflags "-s -w" -o dist/agbridge.exe ./bridge
 
@@ -49,9 +52,17 @@ jobs:
         run: |
           Copy-Item AGRouteGuard.ps1 dist/AGRouteGuard.ps1
           Copy-Item scripts/Start-Bridge.ps1 dist/Start-Bridge.ps1
+          Copy-Item Install.cmd dist/Install.cmd
+          Copy-Item Status.cmd dist/Status.cmd
+          Copy-Item Restore.cmd dist/Restore.cmd
           Copy-Item README.md dist/README.md
           Copy-Item THIRD_PARTY_NOTICES.md dist/THIRD_PARTY_NOTICES.md
           Copy-Item LICENSE dist/LICENSE
+
+          Get-ChildItem dist -File | Sort-Object Name | ForEach-Object {
+            "$(($_ | Get-FileHash -Algorithm SHA256).Hash.ToLower())  $($_.Name)"
+          } | Set-Content dist/MANIFEST.sha256 -Encoding ascii
+
           Compress-Archive -Path dist/* -DestinationPath AGRouteGuard-win-x64.zip -Force
           (Get-FileHash AGRouteGuard-win-x64.zip -Algorithm SHA256).Hash.ToLower() + '  AGRouteGuard-win-x64.zip' | Set-Content SHA256SUMS.txt -Encoding ascii
 
