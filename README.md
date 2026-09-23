@@ -100,7 +100,7 @@ RouteGuard does not need Happ/TUN for the Antigravity path. Using a second VPN l
 .\AGRouteGuard.ps1 -Action Restore
 ```
 
-`Status` verifies the upstream egress, Google/CloudCode TLS path, local eligibility patch state, NRPT rules, gate-DNS answers, loopback TCP/443 listeners, live language-server sockets, injector logs, and the newest Antigravity agent log for location/eligibility/proxy errors. You can also double-click `Status.cmd`. `Report.cmd` writes a sanitized diagnostic report to the Desktop without copying the stored proxy password or raw conversation logs. `Launch.cmd` starts Antigravity from the RouteGuard process environment so the patched language server definitely inherits `AG_LS_PROXY`, even when Windows Explorer has not refreshed user environment variables yet.
+`Status` verifies the upstream egress, Google/CloudCode TLS path, local eligibility patch state, NRPT rules, gate-DNS answers, loopback TCP/443 listeners, live language-server sockets, injector logs, and the newest Antigravity agent log for location/eligibility/proxy errors. If the default daily backend still returns location 400 without an account-level 403, `LaunchProduction.cmd` is available as an explicit diagnostic/fallback that sets `CLOUD_CODE_URL=https://cloudcode-pa.googleapis.com` only for that launch. You can also double-click `Status.cmd`. `Report.cmd` writes a sanitized diagnostic report to the Desktop without copying the stored proxy password or raw conversation logs. `Launch.cmd` starts Antigravity from the RouteGuard process environment so the patched language server definitely inherits `AG_LS_PROXY`, even when Windows Explorer has not refreshed user environment variables yet.
 
 For the full failure-layer model, see `docs/LAYER_MODEL.md`.
 
@@ -145,3 +145,7 @@ See `THIRD_PARTY_NOTICES.md`.
 Если Antigravity обновился во время работы, RouteGuard не будет убивать активную задачу ради перепатча: он поставит ремонт в очередь и применит его после закрытия Antigravity.
 
 Если после зелёных проверок маршрута Google всё равно возвращает `User location is not supported for the API use`, это уже не означает утечку IP автоматически: остаётся серверная eligibility/account policy Google, которую локальный патчер физически не переписывает.
+
+### Backend fallback
+
+`Launch.cmd` explicitly clears any inherited `CLOUD_CODE_URL` and starts the normal/default Antigravity backend. `LaunchProduction.cmd` explicitly selects `https://cloudcode-pa.googleapis.com` for one launch. This is **not** enabled automatically: current Antigravity reports show that the daily backend can return a location 400 while the production endpoint returns a different result for the same account/network, but production can also return quota/entitlement errors. Keeping the switch explicit avoids silently changing quota/backend behavior.

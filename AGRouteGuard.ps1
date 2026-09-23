@@ -1,5 +1,5 @@
 param(
-  [ValidateSet('Menu','Setup','Repair','Status','Report','Launch','Restore','Update','AutoUpdate','Watchdog','Reconfigure')]
+  [ValidateSet('Menu','Setup','Repair','Status','Report','Launch','LaunchProduction','Restore','Update','AutoUpdate','Watchdog','Reconfigure')]
   [string]$Action = 'Menu'
 )
 
@@ -168,6 +168,12 @@ function Assert-NoKnownPatcherConflict {
   }
 
   $oldPorts=@('53129','43129','44129','45129','46129','47129','48129')
+  $ccUser=[Environment]::GetEnvironmentVariable('CLOUD_CODE_URL','User')
+  $ccMachine=[Environment]::GetEnvironmentVariable('CLOUD_CODE_URL','Machine')
+  if($ccUser -or $ccMachine){
+    Say 'CLOUD_CODE_URL is persistently set outside RouteGuard; normal Launch.cmd removes it only for its child process.' 'Yellow'
+  }
+
   foreach($name in @('HTTPS_PROXY','HTTP_PROXY','ALL_PROXY')){
     foreach($scope in @('User','Machine')){
       $v=[Environment]::GetEnvironmentVariable($name,$scope)
@@ -1398,7 +1404,12 @@ function Do-Status {
 
   $loc=Get-Location400Status
   if($loc){
-    if($loc.location400){ Say "Latest agent log STILL has Google location 400: $($loc.path)" 'Red' }
+    if($loc.location400){
+      Say "Latest agent log STILL has Google location 400: $($loc.path)" 'Red'
+      if(-not $loc.account403){
+        Say 'Diagnostic option: close Antigravity and try LaunchProduction.cmd once. If 400 changes to 429/another backend error, routing is likely working and the daily backend/account provisioning is the remaining layer.' 'Yellow'
+      }
+    }
     else { Say "No location 400 found in the latest log tail: $($loc.path)" 'Green' }
     if($loc.accountIneligible -and $loc.account403){ Say 'SERVER ACCOUNT GATE: 403/ineligible is present; this is account entitlement/provisioning, not just IP routing.' 'Red' }
     elseif($loc.accountIneligible){ Say 'Latest log also contains an eligibility/account-region message.' 'Yellow' }
@@ -1535,9 +1546,9 @@ function Do-Update([switch]$Automatic) {
   }
 }
 
-function Do-Launch {
+function Start-RouteGuardAntigravity([switch]$ProductionBackend) {
   if(@(Get-AntigravityProcesses).Count -gt 0){
-    Say 'Antigravity is already running. Close it first if you need RouteGuard to refresh its inherited environment.' 'Yellow'
+    Say 'Antigravity is already running. Close it first so the new process can inherit a deterministic RouteGuard environment.' 'Yellow'
     return
   }
   if(!(Test-PatchCurrent)){
@@ -1547,13 +1558,31 @@ function Do-Launch {
   Check-Egress -Quiet | Out-Null
   Check-GooglePath -Quiet | Out-Null
 
-  # This process-level value guarantees that the freshly launched Antigravity
-  # and its language_server inherit the private proxy even if Explorer has not
-  # refreshed the persistent user environment yet.
+  # Process-level values guarantee that the freshly launched Antigravity and its
+  # language_server inherit the private proxy even if Explorer has stale env.
   $env:AG_LS_PROXY='http://127.0.0.1:17890'
+  if($ProductionBackend){
+    $env:CLOUD_CODE_URL='https://cloudcode-pa.googleapis.com'
+  } else {
+    Remove-Item Env:CLOUD_CODE_URL -ErrorAction SilentlyContinue
+  }
+
   $exe=Find-Antigravity
-  Start-Process -FilePath $exe -WorkingDirectory (Split-Path $exe -Parent)
-  Say "Antigravity launched through the RouteGuard environment: $exe" 'Green'
+  Start-Process -FilePath $exe -ArgumentList '--disable-quic' -WorkingDirectory (Split-Path $exe -Parent)
+  if($ProductionBackend){
+    Say 'Antigravity launched through RouteGuard using the production CloudCode backend.' 'Green'
+    Say 'Use this only as an explicit fallback/diagnostic when the default daily backend returns location 400.' 'Yellow'
+  } else {
+    Say "Antigravity launched through the RouteGuard environment: $exe" 'Green'
+  }
+}
+
+function Do-Launch {
+  Start-RouteGuardAntigravity
+}
+
+function Do-LaunchProduction {
+  Start-RouteGuardAntigravity -ProductionBackend
 }
 
 function Do-Report {
@@ -1582,7 +1611,7 @@ function Do-Report {
 function Menu {
   Write-Host ''
   Say "AG RouteGuard v$Version" 'Magenta'
-  Write-Host '1) Setup   2) Repair   3) Status   4) Reconfigure proxy   5) Update   6) Restore   7) Report   8) Launch   0) Exit'
+  Write-Host '1) Setup   2) Repair   3) Status   4) Reconfigure proxy   5) Update   6) Restore   7) Report   8) Launch   9) Launch production backend   0) Exit'
   switch(Read-Host 'Choose'){
     '1'{Do-Setup}
     '2'{Do-Repair}
@@ -1592,6 +1621,7 @@ function Menu {
     '6'{Do-Restore}
     '7'{Do-Report}
     '8'{Do-Launch}
+    '9'{Do-LaunchProduction}
     default{ }
   }
 }
@@ -1602,6 +1632,7 @@ switch($Action){
   'Status'{Do-Status}
   'Report'{Do-Report}
   'Launch'{Do-Launch}
+  'LaunchProduction'{Do-LaunchProduction}
   'Restore'{Do-Restore}
   'Update'{Do-Update}
   'AutoUpdate'{Do-Update -Automatic}

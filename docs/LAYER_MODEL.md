@@ -158,3 +158,8 @@ set explicitly for that process tree. This makes the first post-install test det
 A green local report proves that the known client gates are patched, the language-server/private proxy path is present, the configured SOCKS egress is stable, the Google/CloudCode TLS endpoints are reachable through it, and no known local conflict was found.
 
 It does **not** prove that Google's backend will classify the account or proxy IP as eligible. A server-side `400 FAILED_PRECONDITION` can therefore remain after every local/network check is green; that state must be treated as a backend/account/IP-classification outcome rather than silently adding more local patches.
+
+
+## 13. Default vs production CloudCode backend
+
+Current public Antigravity CLI reports show a distinct failure mode where `daily-cloudcode-pa.googleapis.com` returns `400 FAILED_PRECONDITION` for Gemini while the same account/network sent to `cloudcode-pa.googleapis.com` no longer returns the location error (often exposing a separate quota/entitlement result instead). RouteGuard therefore keeps the normal backend as the default and provides `LaunchProduction.cmd` as an explicit one-launch diagnostic/fallback. It never auto-switches backends because that could change quota and entitlement behavior.
