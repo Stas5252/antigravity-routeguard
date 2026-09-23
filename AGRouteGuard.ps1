@@ -340,6 +340,32 @@ function Get-OurNrptRules {
   return @(Get-DnsClientNrptRule -ErrorAction SilentlyContinue | Where-Object { $_.Comment -eq $NrptComment })
 }
 
+function Clear-GateDnsCache {
+  $usedTargeted=$false
+  try {
+    if(-not ('RouteGuardDnsApi' -as [type])){
+      Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class RouteGuardDnsApi {
+    [DllImport("dnsapi.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern bool DnsFlushResolverCacheEntry_W(string hostName);
+}
+'@ -ErrorAction Stop
+    }
+    foreach($host in $GateMap.Keys){
+      try {
+        [void][RouteGuardDnsApi]::DnsFlushResolverCacheEntry_W([string]$host)
+        $usedTargeted=$true
+      } catch {}
+    }
+  } catch {}
+
+  if(-not $usedTargeted){
+    Clear-DnsClientCache -ErrorAction SilentlyContinue
+  }
+}
+
 function Ensure-GateNrpt([switch]$Quiet) {
   if(-not (Test-IsAdmin)){
     if(-not $Quiet){ Say 'NRPT not checked: Administrator is required.' 'Yellow' }
@@ -366,7 +392,7 @@ function Ensure-GateNrpt([switch]$Quiet) {
       if(-not $Quiet){ Say "NRPT: $host -> DNS $GateDns" 'Green' }
     }
   }
-  Clear-DnsClientCache -ErrorAction SilentlyContinue
+  Clear-GateDnsCache
   return $true
 }
 
@@ -375,7 +401,7 @@ function Remove-GateNrpt {
   foreach($r in @(Get-OurNrptRules)){
     try { Remove-DnsClientNrptRule -Name $r.Name -Force -ErrorAction Stop | Out-Null } catch {}
   }
-  Clear-DnsClientCache -ErrorAction SilentlyContinue
+  Clear-GateDnsCache
 }
 
 function Get-BridgePids {
@@ -414,6 +440,42 @@ function Test-GateListeners([switch]$Quiet) {
     return $false
   }
   return $ok
+}
+
+function Configure-GateFallback([switch]$Quiet) {
+  if(-not (Test-IsAdmin)){
+    if(-not $Quiet){ Say 'CloudCode DNS fallback not configured: Administrator rights are required.' 'Yellow' }
+    return $false
+  }
+
+  if(-not (Test-GateListeners -Quiet:$Quiet)){
+    Remove-GateNrpt
+    if(-not $Quiet){
+      Say 'CloudCode DNS fallback disabled because one or more loopback :443 listeners are unavailable.' 'Yellow'
+      Say 'Primary RouteGuard path (AG_LS_PROXY + Winsock hook) remains active.' 'DarkYellow'
+    }
+    return $false
+  }
+
+  try {
+    if(-not (Ensure-GateNrpt -Quiet:$Quiet)){
+      return $false
+    }
+    Clear-GateDnsCache
+    if(Test-GateDns){
+      if(-not $Quiet){ Say 'CloudCode DNS fallback: healthy.' 'Green' }
+      return $true
+    }
+  } catch {
+    if(-not $Quiet){ Say "CloudCode DNS fallback setup warning: $($_.Exception.Message)" 'Yellow' }
+  }
+
+  # Never leave NRPT pointing at a DNS listener that cannot answer.
+  Remove-GateNrpt
+  if(-not $Quiet){
+    Say 'CloudCode DNS fallback disabled safely; primary process proxy path remains active.' 'Yellow'
+  }
+  return $false
 }
 
 function Test-GateDns {
@@ -970,9 +1032,7 @@ function Do-Setup {
   Save-ProxyValidated
   Stop-BridgeNow
   Start-BridgeNow
-  if(-not (Test-GateListeners)){ throw 'CloudCode gate listeners are not owned by RouteGuard. Another local service may be using a required loopback port.' }
-  Ensure-GateNrpt | Out-Null
-  if(-not (Test-GateDns)){ throw 'Gate DNS self-test failed. Do not launch Antigravity until Status is green.' }
+  Configure-GateFallback | Out-Null
   Apply-Patch
   Remove-Item $PendingRepair,$PendingUpdate -Force -ErrorAction SilentlyContinue
   Register-Tasks
@@ -988,9 +1048,7 @@ function Do-Reconfigure {
   Save-ProxyValidated
   Stop-BridgeNow
   Start-BridgeNow
-  if(-not (Test-GateListeners)){ throw 'CloudCode gate listeners are not owned by RouteGuard after proxy change.' }
-  Ensure-GateNrpt | Out-Null
-  if(-not (Test-GateDns)){ throw 'Gate DNS self-test failed after proxy change.' }
+  Configure-GateFallback | Out-Null
   Apply-Patch
   Remove-Item $PendingRepair -Force -ErrorAction SilentlyContinue
   Register-Tasks
@@ -1006,10 +1064,9 @@ function Do-Repair([switch]$Quiet) {
   if(Test-Path (Join-Path $PSScriptRoot 'agbridge.exe')){ Install-Files }
   Stop-BridgeNow
   Start-BridgeNow
-  if(-not (Test-GateListeners -Quiet)){ throw 'CloudCode gate listeners are unavailable.' }
   Check-Egress -Quiet | Out-Null
   Check-GooglePath -Quiet | Out-Null
-  if(Test-IsAdmin){ Ensure-GateNrpt -Quiet | Out-Null }
+  if(Test-IsAdmin){ Configure-GateFallback -Quiet:$Quiet | Out-Null }
   Apply-Patch -Quiet:$Quiet
   Remove-Item $PendingRepair -Force -ErrorAction SilentlyContinue
   Register-Tasks
@@ -1185,9 +1242,12 @@ function Do-Status {
   $ruleColor=if($rules.Count -ge 2){'Green'}else{'Yellow'}
   Say "RouteGuard NRPT rules: $($rules.Count)/2" $ruleColor
 
-  if(Get-Process agbridge -ErrorAction SilentlyContinue){ Test-GateDns | Out-Null }
-
-  Test-GateListeners | Out-Null
+  $listenersOk=Test-GateListeners
+  if($rules.Count -ge 2 -and $listenersOk){
+    Test-GateDns | Out-Null
+  } elseif($rules.Count -eq 0) {
+    Say 'CloudCode DNS fallback: disabled; primary process-proxy path is still available.' 'Yellow'
+  }
 
   $loc=Get-Location400Status
   if($loc){
