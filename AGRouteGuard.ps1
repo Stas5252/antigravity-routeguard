@@ -678,15 +678,52 @@ function Apply-EligibilityPatches($installDir,[switch]$Quiet) {
 
 function Test-EligibilityPatch($installDir) {
   $results=@()
+  $rxOpt=[Text.RegularExpressions.RegexOptions]::Singleline
+  $cliStock=@(
+    "\x48\x85\xc0\x0f\x84....\x80\x78\x08\x00\x0f\x85....\xe8....\x48\x89\x84\x24\x80\x00\x00\x00\x48\x89\x5c\x24\x50\x48\x89\x4c\x24\x70",
+    "\x48\x85\xc0\x0f\x84....\x80\x78\x08\x00\x0f\x85....\xe8....\x48\x89\x84\x24\x88\x00\x00\x00\x48\x89\x5c\x24\x50\x48\x89\x4c\x24\x78",
+    "\x48\x85\xc0\x0f\x84....\x80\x78\x08\x00\x0f\x85....\xe8....\x48\x89\x84\x24\x88\x00\x00\x00\x48\x89\x5c\x24\x50\x48\x89\x4c\x24\x70"
+  )
+  $cliDone=@(
+    "\x48\x85\xc0\x0f\x84....\x48\x85\xc0\x90\x0f\x85....\xe8....\x48\x89\x84\x24\x80\x00\x00\x00\x48\x89\x5c\x24\x50\x48\x89\x4c\x24\x70",
+    "\x48\x85\xc0\x0f\x84....\x48\x85\xc0\x90\x0f\x85....\xe8....\x48\x89\x84\x24\x88\x00\x00\x00\x48\x89\x5c\x24\x50\x48\x89\x4c\x24\x78",
+    "\x48\x85\xc0\x0f\x84....\x48\x85\xc0\x90\x0f\x85....\xe8....\x48\x89\x84\x24\x88\x00\x00\x00\x48\x89\x5c\x24\x50\x48\x89\x4c\x24\x70"
+  )
+  $managerStock="\x80\x78\x08\x00\x74.\x48\x8b.\x24.\x48\x89.\x60"
+  $managerDone="\xc6\x40\x08\x01\x90\x90\x48\x8b.\x24.\x48\x89.\x60"
+
   foreach($p in @(Get-EligibilityTargets $installDir)){
     try {
-      $s=[Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($p))
+      $bytes=[IO.File]::ReadAllBytes($p)
+      $ascii=[Text.Encoding]::ASCII.GetString($bytes)
+      $latin=[Text.Encoding]::GetEncoding(28591).GetString($bytes)
+      $name=[IO.Path]::GetFileName($p).ToLowerInvariant()
+      $machine='not-applicable'
+
+      if($name -eq 'agy.exe'){
+        $stock=0; $done=0
+        foreach($pattern in $cliStock){ $stock += [regex]::Matches($latin,$pattern,$rxOpt).Count }
+        foreach($pattern in $cliDone){ $done += [regex]::Matches($latin,$pattern,$rxOpt).Count }
+        if($done -gt 0 -and $stock -eq 0){ $machine='patched' }
+        elseif($stock -eq 1 -and $done -eq 0){ $machine='unpatched' }
+        elseif($stock -gt 1 -or ($stock -gt 0 -and $done -gt 0)){ $machine='ambiguous' }
+        else { $machine='unknown' }
+      } elseif($name.StartsWith('language_server')){
+        $stock=[regex]::Matches($latin,$managerStock,$rxOpt).Count
+        $done=[regex]::Matches($latin,$managerDone,$rxOpt).Count
+        if($done -eq 1 -and $stock -eq 0){ $machine='patched' }
+        elseif($stock -eq 1 -and $done -eq 0){ $machine='unpatched' }
+        elseif($stock -gt 1 -or $done -gt 1 -or ($stock -gt 0 -and $done -gt 0)){ $machine='ambiguous' }
+        else { $machine='unknown' }
+      }
+
       $results += [pscustomobject]@{
         path=$p
-        patched=$s.Contains('inexigible')
-        stock=$s.Contains('ineligible')
-        privateProxy=$s.Contains('AG_LS_PROXY')
-        stockProxy=$s.Contains('https_proxy')
+        patched=$ascii.Contains('inexigible')
+        stock=$ascii.Contains('ineligible')
+        privateProxy=$ascii.Contains('AG_LS_PROXY')
+        stockProxy=$ascii.Contains('https_proxy')
+        machineGate=$machine
       }
     } catch {}
   }
@@ -724,7 +761,11 @@ function Test-PatchCurrent {
     if([string]$cfg._comment -ne $RouteGuardMarker){ return $false }
 
     $elig=@(Test-EligibilityPatch $dir)
-    if(@($elig | Where-Object { ($_.stock -and -not $_.patched) -or ($_.stockProxy -and -not $_.privateProxy) }).Count -gt 0){ return $false }
+    if(@($elig | Where-Object {
+      ($_.stock -and -not $_.patched) -or
+      ($_.stockProxy -and -not $_.privateProxy) -or
+      ($_.machineGate -eq 'unpatched')
+    }).Count -gt 0){ return $false }
     return $true
   } catch { return $false }
 }
@@ -987,6 +1028,9 @@ function Do-Status {
       elseif($e.stock){ $state='stock/unpatched'; $color='Red' }
       else { $state='signature absent'; $color='Yellow' }
       Say "Eligibility $state : $($e.path)" $color
+      if($e.machineGate -eq 'patched'){ Say "  machine gate: patched" 'Green' }
+      elseif($e.machineGate -eq 'unpatched'){ Say "  machine gate: known + unpatched" 'Red' }
+      elseif($e.machineGate -in @('unknown','ambiguous')){ Say "  machine gate: $($e.machineGate) (left untouched; no offset guessing)" 'Yellow' }
     }
   } catch { Say $_.Exception.Message 'Red' }
 
