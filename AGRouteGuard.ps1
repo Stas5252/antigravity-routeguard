@@ -274,6 +274,15 @@ function Get-BridgeProcess {
   }
 }
 
+function Stop-BridgeNow {
+  foreach($p in @(Get-BridgeProcess)){
+    try {
+      $pid=if($null -ne $p.ProcessId){[int]$p.ProcessId}else{[int]$p.Id}
+      Stop-Process -Id $pid -Force -ErrorAction Stop
+    } catch {}
+  }
+}
+
 function Start-BridgeNow {
   if(!(Test-Path $ProxyCfg)){ throw 'Proxy is not configured. Run Setup.' }
   if(!(Test-Path $Bridge)){ throw 'agbridge.exe is missing. Run Setup/Repair from a release package.' }
@@ -946,7 +955,7 @@ function Do-Setup {
   Install-Files
   Assert-NoKnownPatcherConflict
   Save-ProxyValidated
-  Stop-Process -Name agbridge -Force -ErrorAction SilentlyContinue
+  Stop-BridgeNow
   Start-BridgeNow
   if(-not (Test-GateListeners)){ throw 'CloudCode gate listeners are not owned by RouteGuard. Another local service may be using a required loopback port.' }
   Ensure-GateNrpt | Out-Null
@@ -964,7 +973,7 @@ function Do-Reconfigure {
   Install-Files
   Assert-NoKnownPatcherConflict
   Save-ProxyValidated
-  Stop-Process -Name agbridge -Force -ErrorAction SilentlyContinue
+  Stop-BridgeNow
   Start-BridgeNow
   if(-not (Test-GateListeners)){ throw 'CloudCode gate listeners are not owned by RouteGuard after proxy change.' }
   Ensure-GateNrpt | Out-Null
@@ -982,7 +991,7 @@ function Do-Repair([switch]$Quiet) {
     return
   }
   if(Test-Path (Join-Path $PSScriptRoot 'agbridge.exe')){ Install-Files }
-  Stop-Process -Name agbridge -Force -ErrorAction SilentlyContinue
+  Stop-BridgeNow
   Start-BridgeNow
   if(-not (Test-GateListeners -Quiet)){ throw 'CloudCode gate listeners are unavailable.' }
   Check-Egress -Quiet | Out-Null
@@ -1203,7 +1212,7 @@ function Restore-EligibilityBackups {
 function Do-Restore {
   Ensure-AdminInteractive
   Assert-AntigravityClosed
-  Stop-Process -Name agbridge -Force -ErrorAction SilentlyContinue
+  Stop-BridgeNow
   Remove-Tasks
   Remove-GateNrpt
   Remove-PrivateProxyEnv
@@ -1284,7 +1293,7 @@ function Do-Update([switch]$Automatic) {
       if(!(Test-Path (Join-Path $unpack $name))){ throw "Release package missing $name" }
     }
 
-    Stop-Process -Name agbridge -Force -ErrorAction SilentlyContinue
+    Stop-BridgeNow
     foreach($name in @('AGRouteGuard.ps1','agbridge.exe','version.dll','Start-Bridge.ps1')){
       Copy-Item (Join-Path $unpack $name) (Join-Path $Root $name) -Force
     }
