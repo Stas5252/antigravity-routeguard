@@ -22,7 +22,7 @@ jobs:
         with:
           go-version: '1.23.x'
 
-      - name: Validate PowerShell syntax
+      - name: Validate PowerShell 7 syntax
         shell: pwsh
         run: |
           Get-ChildItem -Recurse -Filter '*.ps1' | ForEach-Object {
@@ -30,9 +30,21 @@ jobs:
             [void][scriptblock]::Create((Get-Content $_.FullName -Raw))
           }
 
-      - name: Test eligibility signatures
+      - name: Validate Windows PowerShell 5.1 syntax
+        shell: powershell
+        run: |
+          Get-ChildItem -Recurse -Filter '*.ps1' | ForEach-Object {
+            Write-Host "Parsing $($_.FullName)"
+            [void][scriptblock]::Create((Get-Content $_.FullName -Raw))
+          }
+
+      - name: Test eligibility signatures on PowerShell 7
         shell: pwsh
         run: ./tests/eligibility-signatures.ps1
+
+      - name: Test eligibility signatures on Windows PowerShell 5.1
+        shell: powershell
+        run: .\tests\eligibility-signatures.ps1
 
       - name: Test, vet and build authenticated SOCKS bridge
         shell: pwsh
