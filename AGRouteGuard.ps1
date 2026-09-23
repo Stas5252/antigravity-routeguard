@@ -44,8 +44,8 @@ function Ensure-AdminInteractive {
   if(Test-IsAdmin){ return }
   if($Action -notin @('Setup','Reconfigure','Restore')){ return }
   Say 'RouteGuard needs Administrator once to install/remove the two NRPT gate-DNS rules.' 'Yellow'
-  $args = @('-NoProfile','-ExecutionPolicy','Bypass','-File',$PSCommandPath,'-Action',$Action)
-  Start-Process powershell.exe -Verb RunAs -ArgumentList $args | Out-Null
+  $argLine = '-NoProfile -ExecutionPolicy Bypass -File "{0}" -Action {1}' -f $PSCommandPath,$Action
+  Start-Process powershell.exe -Verb RunAs -ArgumentList $argLine | Out-Null
   exit
 }
 
@@ -388,7 +388,7 @@ function Patch-IdeMainJs($installDir,[switch]$Quiet) {
     if(-not [regex]::IsMatch($text,$pattern)){ continue }
 
     $meta=Save-PatchBackup $path 'ide-main-js'
-    $new=[regex]::Replace($text,$pattern,'$1true')
+    $new=[regex]::Replace($text,$pattern,'${1}true')
     [IO.File]::WriteAllText($path,$new,(New-Object Text.UTF8Encoding($false)))
     Finish-PatchBackup $meta $path
     $patched=$true
@@ -461,6 +461,7 @@ function Apply-Patch([switch]$Quiet) {
   Copy-Item $Injector (Join-Path $dir 'version.dll') -Force
   Write-InjectorConfig $dir
   Apply-EligibilityPatches $dir -Quiet:$Quiet | Out-Null
+  Ensure-PrivateProxyEnv
   Set-Content $InstallDirFile $dir -Encoding UTF8
   if(-not $Quiet){ Say "RouteGuard applied: $dir" 'Green' }
 }
@@ -645,6 +646,7 @@ function Do-Restore {
   Stop-Process -Name agbridge -Force -ErrorAction SilentlyContinue
   Remove-Tasks
   Remove-GateNrpt
+  Remove-PrivateProxyEnv
   Restore-EligibilityBackups
   if(Test-Path $InstallDirFile){
     $dir=(Get-Content $InstallDirFile -Raw).Trim()
