@@ -20,4 +20,16 @@ $existing = Get-CimInstance Win32_Process -Filter "Name='agbridge.exe'" -ErrorAc
   Where-Object { $_.ExecutablePath -eq $Bridge }
 if ($existing) { exit 0 }
 
-Start-Process -FilePath $Bridge -WindowStyle Hidden -WorkingDirectory $Root
+$OutLog = Join-Path $Root 'bridge.out.log'
+$ErrLog = Join-Path $Root 'bridge.err.log'
+foreach($p in @($OutLog,$ErrLog)){
+  if(Test-Path $p){
+    try {
+      if((Get-Item $p).Length -gt 5MB){
+        Move-Item $p "$p.1" -Force
+      }
+    } catch {}
+  }
+}
+
+Start-Process -FilePath $Bridge -WindowStyle Hidden -WorkingDirectory $Root -RedirectStandardOutput $OutLog -RedirectStandardError $ErrLog
