@@ -71,6 +71,51 @@ function Get-InstallDir {
   return (Split-Path (Find-Antigravity) -Parent)
 }
 
+function Get-AntigravityProcesses {
+  return @(Get-Process -ErrorAction SilentlyContinue | Where-Object {
+    $_.ProcessName -like 'Antigravity*' -or $_.ProcessName -like 'language_server*'
+  })
+}
+
+function Assert-AntigravityClosed {
+  $p=@(Get-AntigravityProcesses)
+  if($p.Count -gt 0){
+    $names=($p | Select-Object -ExpandProperty ProcessName -Unique) -join ', '
+    throw "Close Antigravity completely before patching. Running: $names"
+  }
+}
+
+function Show-LiveLanguageServerEgress {
+  try {
+    $pids=@(Get-Process -Name 'language_server*' -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id)
+    if($pids.Count -eq 0){
+      Say 'Live language-server egress: not running.' 'Yellow'
+      return
+    }
+    $conns=@(Get-NetTCPConnection -State Established -ErrorAction SilentlyContinue |
+      Where-Object { $pids -contains $_.OwningProcess -and $_.RemotePort -in @(443,17890) })
+    if($conns.Count -eq 0){
+      Say 'Live language-server egress: no established 443/proxy sockets yet.' 'Yellow'
+      return
+    }
+    $direct=@($conns | Where-Object {
+      $_.RemotePort -eq 443 -and $_.RemoteAddress -notlike '127.*' -and $_.RemoteAddress -ne '::1'
+    })
+    $local=@($conns | Where-Object {
+      $_.RemoteAddress -like '127.*' -or $_.RemoteAddress -eq '::1' -or $_.RemotePort -eq 17890
+    })
+    if($direct.Count -gt 0){
+      Say "LIVE EGRESS WARNING: language_server has $($direct.Count) direct non-loopback TLS socket(s)." 'Red'
+    } elseif($local.Count -gt 0){
+      Say "Live language-server egress: loopback/proxy only ($($local.Count) socket(s) observed)." 'Green'
+    } else {
+      Say 'Live language-server egress: established sockets are inconclusive.' 'Yellow'
+    }
+  } catch {
+    Say "Live egress probe unavailable: $($_.Exception.Message)" 'Yellow'
+  }
+}
+
 function Get-ProxyPlain {
   if(!(Test-Path $ProxyCfg)){ throw 'Proxy is not configured. Run Setup/Reconfigure.' }
   $cfg = Get-Content $ProxyCfg -Raw | ConvertFrom-Json
@@ -576,6 +621,7 @@ function Get-Location400Status {
 
 function Do-Setup {
   Ensure-AdminInteractive
+  Assert-AntigravityClosed
   Install-Files
   Save-Proxy
   Check-Egress | Out-Null
@@ -590,6 +636,7 @@ function Do-Setup {
 
 function Do-Reconfigure {
   Ensure-AdminInteractive
+  Assert-AntigravityClosed
   Install-Files
   Save-Proxy
   Check-Egress | Out-Null
@@ -602,6 +649,10 @@ function Do-Reconfigure {
 }
 
 function Do-Repair([switch]$Quiet) {
+  if(@(Get-AntigravityProcesses).Count -gt 0){
+    if(-not $Quiet){ Say 'Repair deferred: close Antigravity, then run Repair again.' 'Yellow' }
+    return
+  }
   if(Test-Path (Join-Path $PSScriptRoot 'agbridge.exe')){ Install-Files }
   Start-BridgeNow
   Check-Egress -Quiet | Out-Null
@@ -657,6 +708,7 @@ function Do-Status {
   Say "Bridge process: $([bool](Get-Process agbridge -ErrorAction SilentlyContinue))" 'Cyan'
   Say "Patch current: $(Test-PatchCurrent)" 'Cyan'
   Show-CompetingProxySettings
+  Show-LiveLanguageServerEgress
   if(Test-Path $ProxyCfg){
     try { Check-Egress | Out-Null } catch { Say $_.Exception.Message 'Red' }
   } else { Say 'Proxy not configured.' 'Yellow' }
