@@ -1,5 +1,5 @@
 param(
-  [ValidateSet('Menu','Setup','Repair','Status','Restore','Update','AutoUpdate','Watchdog','Reconfigure')]
+  [ValidateSet('Menu','Setup','Repair','Status','Report','Restore','Update','AutoUpdate','Watchdog','Reconfigure')]
   [string]$Action = 'Menu'
 )
 
@@ -1220,10 +1220,33 @@ function Do-Update([switch]$Automatic) {
   }
 }
 
+function Do-Report {
+  Ensure-Root
+  $stamp=Get-Date -Format 'yyyyMMdd-HHmmss'
+  $desktop=[Environment]::GetFolderPath('Desktop')
+  if([string]::IsNullOrWhiteSpace($desktop)){ $desktop=$Root }
+  $path=Join-Path $desktop "AGRouteGuard-report-$stamp.txt"
+
+  $header=@(
+    "AG RouteGuard diagnostic report",
+    "Generated: $(Get-Date -Format o)",
+    "RouteGuard script version: $Version",
+    "PowerShell: $($PSVersionTable.PSVersion)",
+    "Windows: $([Environment]::OSVersion.VersionString)",
+    ""
+  ) -join [Environment]::NewLine
+
+  $scriptToRun=if(Test-Path $InstalledScript){$InstalledScript}else{$PSCommandPath}
+  $status=& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $scriptToRun -Action Status *>&1 | Out-String
+  Set-Content -LiteralPath $path -Value ($header + $status) -Encoding UTF8
+  Say "Sanitized diagnostic report saved: $path" 'Green'
+  Say 'The report does not include the stored proxy password or raw Antigravity conversation logs.' 'Cyan'
+}
+
 function Menu {
   Write-Host ''
   Say "AG RouteGuard v$Version" 'Magenta'
-  Write-Host '1) Setup   2) Repair   3) Status   4) Reconfigure proxy   5) Update   6) Restore   0) Exit'
+  Write-Host '1) Setup   2) Repair   3) Status   4) Reconfigure proxy   5) Update   6) Restore   7) Report   0) Exit'
   switch(Read-Host 'Choose'){
     '1'{Do-Setup}
     '2'{Do-Repair}
@@ -1231,6 +1254,7 @@ function Menu {
     '4'{Do-Reconfigure}
     '5'{Do-Update}
     '6'{Do-Restore}
+    '7'{Do-Report}
     default{ }
   }
 }
@@ -1239,6 +1263,7 @@ switch($Action){
   'Setup'{Do-Setup}
   'Repair'{Do-Repair}
   'Status'{Do-Status}
+  'Report'{Do-Report}
   'Restore'{Do-Restore}
   'Update'{Do-Update}
   'AutoUpdate'{Do-Update -Automatic}
