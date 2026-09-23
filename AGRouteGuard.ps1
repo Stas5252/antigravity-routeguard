@@ -577,13 +577,38 @@ function Save-PatchBackup($path,$kind) {
   $key=Get-PathKey $path
   $bak=Join-Path $BackupDir "$key.bak"
   $meta=Join-Path $BackupDir "$key.json"
+  $currentHash=(Get-FileHash $path -Algorithm SHA256).Hash
+
+  $existing=$null
+  if(Test-Path $meta){
+    try { $existing=Get-Content $meta -Raw | ConvertFrom-Json } catch { $existing=$null }
+  }
+
+  # Never replace the pristine backup merely because we are adding another
+  # RouteGuard patch to the same build. Refresh only when Antigravity itself
+  # changed the file to a hash that is neither our original nor our patched copy.
+  $preserve=$false
+  if($existing -and (Test-Path $bak)){
+    if($currentHash -eq [string]$existing.original_hash -or
+       ($existing.patched_hash -and $currentHash -eq [string]$existing.patched_hash)){
+      $preserve=$true
+    }
+  }
+
+  if($preserve){
+    $existing.kind=$kind
+    $existing | ConvertTo-Json | Set-Content $meta -Encoding UTF8
+    return $meta
+  }
+
   Copy-Item $path $bak -Force
   [pscustomobject]@{
     target=[IO.Path]::GetFullPath($path)
     kind=$kind
-    original_hash=(Get-FileHash $path -Algorithm SHA256).Hash
+    original_hash=$currentHash
     patched_hash=''
     backup=$bak
+    build_seen_utc=[DateTime]::UtcNow.ToString('o')
   } | ConvertTo-Json | Set-Content $meta -Encoding UTF8
   return $meta
 }
@@ -618,44 +643,32 @@ function Patch-IneligibleField($path,[switch]$Quiet) {
   $hasEligibility=$ascii.Contains('inexigible')
   $hasProxyVar=$ascii.Contains('AG_LS_PROXY')
 
-  # Open AG Patcher uses these exact x64 gates for two additional local checks.
-  # We only touch them when the known signature matches; unknown builds are left
-  # alone instead of guessing offsets.
-  # Three currently observed Windows x64 CLI layouts. The longer context
-  # avoids patching a coincidental short instruction sequence.
-  $cliPatterns=@(
-    "\x48\x85\xc0\x0f\x84....\x80\x78\x08\x00\x0f\x85....\xe8....\x48\x89\x84\x24\x80\x00\x00\x00\x48\x89\x5c\x24\x50\x48\x89\x4c\x24\x70",
-    "\x48\x85\xc0\x0f\x84....\x80\x78\x08\x00\x0f\x85....\xe8....\x48\x89\x84\x24\x88\x00\x00\x00\x48\x89\x5c\x24\x50\x48\x89\x4c\x24\x78",
-    "\x48\x85\xc0\x0f\x84....\x80\x78\x08\x00\x0f\x85....\xe8....\x48\x89\x84\x24\x88\x00\x00\x00\x48\x89\x5c\x24\x50\x48\x89\x4c\x24\x70"
-  )
-  $cliPatchedPatterns=@(
-    "\x48\x85\xc0\x0f\x84....\x48\x85\xc0\x90\x0f\x85....\xe8....\x48\x89\x84\x24\x80\x00\x00\x00\x48\x89\x5c\x24\x50\x48\x89\x4c\x24\x70",
-    "\x48\x85\xc0\x0f\x84....\x48\x85\xc0\x90\x0f\x85....\xe8....\x48\x89\x84\x24\x88\x00\x00\x00\x48\x89\x5c\x24\x50\x48\x89\x4c\x24\x78",
-    "\x48\x85\xc0\x0f\x84....\x48\x85\xc0\x90\x0f\x85....\xe8....\x48\x89\x84\x24\x88\x00\x00\x00\x48\x89\x5c\x24\x50\x48\x89\x4c\x24\x70"
-  )
+  # Latest Open AG Patcher uses the stable 16-byte x64 eligibility core.
+  # The call/spill tail changed across CLI 1.2.5-1.2.7+, so tying the match to
+  # that tail makes a valid gate disappear after harmless compiler layout changes.
+  # Go may emit the same local gate more than once; patch every exact core match.
+  $cliPattern="\x48\x85\xc0\x0f\x84....\x80\x78\x08\x00\x0f\x85...."
+  $cliPatchedPattern="\x48\x85\xc0\x0f\x84....\x48\x85\xc0\x90\x0f\x85...."
   $managerPattern="\x80\x78\x08\x00\x74.\x48\x8b.\x24.\x48\x89.\x60"
   $managerPatched="\xc6\x40\x08\x01\x90\x90\x48\x8b.\x24.\x48\x89.\x60"
 
   $cliMatches=@()
+  $cliPatchedMatches=@()
   $managerMatches=@()
   $hasCliGate=$false
   $hasManagerGate=$false
 
   if($name -eq 'agy.exe'){
-    foreach($pattern in $cliPatterns){
-      $cliMatches += @([regex]::Matches($latin,$pattern,$rxOpt))
-    }
-    foreach($pattern in $cliPatchedPatterns){
-      if([regex]::IsMatch($latin,$pattern,$rxOpt)){ $hasCliGate=$true }
-    }
+    $cliMatches=@([regex]::Matches($latin,$cliPattern,$rxOpt))
+    $cliPatchedMatches=@([regex]::Matches($latin,$cliPatchedPattern,$rxOpt))
+    $hasCliGate=$cliPatchedMatches.Count -gt 0
   }
   if($name.StartsWith('language_server')){
     $managerMatches=@([regex]::Matches($latin,$managerPattern,$rxOpt))
     $hasManagerGate=[regex]::IsMatch($latin,$managerPatched,$rxOpt)
   }
 
-  $needCliGate=$cliMatches.Count -eq 1
-  $cliAmbiguous=$cliMatches.Count -gt 1
+  $needCliGate=$cliMatches.Count -gt 0
   $needManagerGate=$managerMatches.Count -eq 1
   $managerAmbiguous=$managerMatches.Count -gt 1
 
@@ -665,7 +678,6 @@ function Patch-IneligibleField($path,[switch]$Quiet) {
       if(-not $Quiet){ Say "Client binary gates already patched: $path" 'DarkGreen' }
       return $true
     }
-    if($cliAmbiguous -and -not $Quiet){ Say "CLI eligibility signature is not unique; refusing to guess: $path" 'Yellow' }
     if($managerAmbiguous -and -not $Quiet){ Say "Manager auth signature is not unique; refusing to guess: $path" 'Yellow' }
     return $false
   }
@@ -703,10 +715,10 @@ function Patch-IneligibleField($path,[switch]$Quiet) {
 
   if($needCliGate){
     $fix=[byte[]](0x48,0x85,0xc0,0x90)
-    [Array]::Copy($fix,0,$bytes,$cliMatches[0].Index+9,$fix.Length)
-    $changes += 'agy eligibility gate x1'
-  } elseif($cliAmbiguous -and -not $Quiet) {
-    Say "CLI eligibility signature is not unique; skipped machine-code gate: $path" 'Yellow'
+    foreach($m in $cliMatches){
+      [Array]::Copy($fix,0,$bytes,$m.Index+9,$fix.Length)
+    }
+    $changes += "agy eligibility gate x$($cliMatches.Count)"
   }
 
   if($needManagerGate){
@@ -748,15 +760,26 @@ function Patch-IdeMainJs($installDir,[switch]$Quiet) {
   foreach($path in $paths){
     if(!(Test-Path $path)){ continue }
     $text=Get-Content $path -Raw -Encoding UTF8
-    if($text.Contains($done)){
+    $stockMatches=@([regex]::Matches($text,$pattern))
+    $doneCount=([regex]::Matches($text,[regex]::Escape($done))).Count
+
+    if($doneCount -gt 0 -and $stockMatches.Count -gt 0){
+      if(-not $Quiet){ Say "IDE gate is partially/ambiguously patched; refusing to guess: $path" 'Yellow' }
+      continue
+    }
+    if($doneCount -eq 1 -and $stockMatches.Count -eq 0){
       $patched=$true
       if(-not $Quiet){ Say "IDE account-region gate already patched: $path" 'DarkGreen' }
       continue
     }
-    if(-not [regex]::IsMatch($text,$pattern)){ continue }
+    if($doneCount -gt 1 -or $stockMatches.Count -gt 1){
+      if(-not $Quiet){ Say "IDE gate signature is not unique; refusing to guess: $path" 'Yellow' }
+      continue
+    }
+    if($stockMatches.Count -ne 1){ continue }
 
     $meta=Save-PatchBackup $path 'ide-main-js'
-    $new=[regex]::Replace($text,$pattern,'${1}true')
+    $new=[regex]::Replace($text,$pattern,'${1}true',1)
     [IO.File]::WriteAllText($path,$new,(New-Object Text.UTF8Encoding($false)))
     Finish-PatchBackup $meta $path
     $patched=$true
@@ -808,16 +831,8 @@ function Apply-EligibilityPatches($installDir,[switch]$Quiet) {
 function Test-EligibilityPatch($installDir) {
   $results=@()
   $rxOpt=[Text.RegularExpressions.RegexOptions]::Singleline
-  $cliStock=@(
-    "\x48\x85\xc0\x0f\x84....\x80\x78\x08\x00\x0f\x85....\xe8....\x48\x89\x84\x24\x80\x00\x00\x00\x48\x89\x5c\x24\x50\x48\x89\x4c\x24\x70",
-    "\x48\x85\xc0\x0f\x84....\x80\x78\x08\x00\x0f\x85....\xe8....\x48\x89\x84\x24\x88\x00\x00\x00\x48\x89\x5c\x24\x50\x48\x89\x4c\x24\x78",
-    "\x48\x85\xc0\x0f\x84....\x80\x78\x08\x00\x0f\x85....\xe8....\x48\x89\x84\x24\x88\x00\x00\x00\x48\x89\x5c\x24\x50\x48\x89\x4c\x24\x70"
-  )
-  $cliDone=@(
-    "\x48\x85\xc0\x0f\x84....\x48\x85\xc0\x90\x0f\x85....\xe8....\x48\x89\x84\x24\x80\x00\x00\x00\x48\x89\x5c\x24\x50\x48\x89\x4c\x24\x70",
-    "\x48\x85\xc0\x0f\x84....\x48\x85\xc0\x90\x0f\x85....\xe8....\x48\x89\x84\x24\x88\x00\x00\x00\x48\x89\x5c\x24\x50\x48\x89\x4c\x24\x78",
-    "\x48\x85\xc0\x0f\x84....\x48\x85\xc0\x90\x0f\x85....\xe8....\x48\x89\x84\x24\x88\x00\x00\x00\x48\x89\x5c\x24\x50\x48\x89\x4c\x24\x70"
-  )
+  $cliStock="\x48\x85\xc0\x0f\x84....\x80\x78\x08\x00\x0f\x85...."
+  $cliDone="\x48\x85\xc0\x0f\x84....\x48\x85\xc0\x90\x0f\x85...."
   $managerStock="\x80\x78\x08\x00\x74.\x48\x8b.\x24.\x48\x89.\x60"
   $managerDone="\xc6\x40\x08\x01\x90\x90\x48\x8b.\x24.\x48\x89.\x60"
 
@@ -830,12 +845,10 @@ function Test-EligibilityPatch($installDir) {
       $machine='not-applicable'
 
       if($name -eq 'agy.exe'){
-        $stock=0; $done=0
-        foreach($pattern in $cliStock){ $stock += [regex]::Matches($latin,$pattern,$rxOpt).Count }
-        foreach($pattern in $cliDone){ $done += [regex]::Matches($latin,$pattern,$rxOpt).Count }
-        if($done -gt 0 -and $stock -eq 0){ $machine='patched' }
-        elseif($stock -eq 1 -and $done -eq 0){ $machine='unpatched' }
-        elseif($stock -gt 1 -or ($stock -gt 0 -and $done -gt 0)){ $machine='ambiguous' }
+        $stock=[regex]::Matches($latin,$cliStock,$rxOpt).Count
+        $done=[regex]::Matches($latin,$cliDone,$rxOpt).Count
+        if($stock -gt 0){ $machine='unpatched' }
+        elseif($done -gt 0){ $machine='patched' }
         else { $machine='unknown' }
       } elseif($name.StartsWith('language_server')){
         $stock=[regex]::Matches($latin,$managerStock,$rxOpt).Count
