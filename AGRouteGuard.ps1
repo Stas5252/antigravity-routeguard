@@ -491,6 +491,8 @@ function Test-EligibilityPatch($installDir) {
         path=$p
         patched=$s.Contains('inexigible')
         stock=$s.Contains('ineligible')
+        privateProxy=$s.Contains('AG_LS_PROXY')
+        stockProxy=$s.Contains('https_proxy')
       }
     } catch {}
   }
@@ -522,7 +524,7 @@ function Test-PatchCurrent {
     if([string]$cfg._comment -ne $RouteGuardMarker){ return $false }
 
     $elig=@(Test-EligibilityPatch $dir)
-    if(@($elig | Where-Object { $_.stock -and -not $_.patched }).Count -gt 0){ return $false }
+    if(@($elig | Where-Object { ($_.stock -and -not $_.patched) -or ($_.stockProxy -and -not $_.privateProxy) }).Count -gt 0){ return $false }
     return $true
   } catch { return $false }
 }
