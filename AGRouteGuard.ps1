@@ -32,6 +32,23 @@ function Ensure-Root {
   New-Item -ItemType Directory -Path $BackupDir -Force | Out-Null
 }
 
+function Test-IsAdmin {
+  try {
+    $id = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $p = New-Object Security.Principal.WindowsPrincipal($id)
+    return $p.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+  } catch { return $false }
+}
+
+function Ensure-AdminInteractive {
+  if(Test-IsAdmin){ return }
+  if($Action -notin @('Setup','Reconfigure','Restore')){ return }
+  Say 'RouteGuard needs Administrator once to install/remove the two NRPT gate-DNS rules.' 'Yellow'
+  $args = @('-NoProfile','-ExecutionPolicy','Bypass','-File',$PSCommandPath,'-Action',$Action)
+  Start-Process powershell.exe -Verb RunAs -ArgumentList $args | Out-Null
+  exit
+}
+
 function Find-Antigravity {
   $candidates = @(
     (Join-Path $env:LOCALAPPDATA 'Programs\Antigravity\Antigravity.exe'),
@@ -48,6 +65,10 @@ function Find-Antigravity {
     if($hit){ return $hit.FullName }
   }
   throw 'Antigravity.exe not found. Install Antigravity first.'
+}
+
+function Get-InstallDir {
+  return (Split-Path (Find-Antigravity) -Parent)
 }
 
 function Get-ProxyPlain {
