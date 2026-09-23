@@ -15,9 +15,18 @@ $env:AG_UPSTREAM_USER = [string]$cfg.username
 $env:AG_UPSTREAM_PASS = $plain
 $env:AG_LOCAL_ADDR = if ($cfg.local_addr) { [string]$cfg.local_addr } else { '127.0.0.1:17890' }
 
-$existing = Get-CimInstance Win32_Process -Filter "Name='agbridge.exe'" -ErrorAction SilentlyContinue |
-  Where-Object { $_.ExecutablePath -eq $Bridge }
-if ($existing) { exit 0 }
+$existing = @()
+try {
+  $existing = @(Get-CimInstance Win32_Process -Filter "Name='agbridge.exe'" -ErrorAction Stop |
+    Where-Object { $_.ExecutablePath -eq $Bridge })
+} catch {
+  $existing = @(Get-Process -Name agbridge -ErrorAction SilentlyContinue |
+    Where-Object {
+      try { [IO.Path]::GetFullPath($_.Path) -eq [IO.Path]::GetFullPath($Bridge) }
+      catch { $false }
+    })
+}
+if ($existing.Count -gt 0) { exit 0 }
 
 $OutLog = Join-Path $Root 'bridge.out.log'
 $ErrLog = Join-Path $Root 'bridge.err.log'

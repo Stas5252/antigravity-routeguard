@@ -81,11 +81,14 @@ Known gate-host AAAA queries receive NOERROR/NODATA, so the gate cannot escape o
 For the injected Antigravity processes RouteGuard configures:
 
 ```text
+dns_mode      = direct
 udp_mode      = block
 udp_fallback  = block
 ipv6_mode     = block
 default route = proxy
 ```
+
+The ordinary DNS setting is deliberately `direct`: the pinned injector's port allowlist is HTTP/HTTPS (80/443), and its own documentation recommends direct DNS to avoid DNS timeouts. Google application connections still use the proxy path, and the two location-sensitive CloudCode gate names retain the independent NRPT + loopback-tunnel fallback. This trades DNS-query privacy for application stability without allowing model HTTPS to fall back to the ISP.
 
 The aim is fail-closed behaviour: a broken proxy should cause a failed request, not a request from a different public IP. This is intentionally stricter than compatibility-first routing. Some newer Electron/Chromium flows prefer QUIC and may not always fall back cleanly; RouteGuard does **not** silently allow direct UDP because doing so would re-introduce an egress leak.
 

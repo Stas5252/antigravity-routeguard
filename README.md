@@ -47,7 +47,7 @@ For the gate fallback, Windows NRPT points only `cloudcode-pa.googleapis.com` an
 - auto-detects the Antigravity Windows install;
 - injects `Antigravity.exe`, `Antigravity IDE.exe`, `language_server*`, `node.exe`, and `agy.exe`;
 - routes TCP 80/443 through one local SOCKS5 bridge;
-- blocks UDP/QUIC fallback and native IPv6 in target processes to reduce direct egress leaks;
+- blocks UDP/QUIC fallback and native IPv6 in target processes to reduce direct egress leaks; ordinary DNS uses the system resolver for compatibility, while the two CloudCode gate names retain the separate RouteGuard NRPT/tunnel fallback;
 - supports authenticated SOCKS5 upstream proxies and retries transient upstream SOCKS connection/auth failures before failing a new agent request;
 - stores the upstream password using Windows DPAPI for the current Windows user;
 - verifies the real proxy egress three times before patching and rejects rotating/changing egress;
@@ -60,7 +60,7 @@ For the gate fallback, Windows NRPT points only `cloudcode-pa.googleapis.com` an
 - runs a watchdog every 5 minutes: it checks the hook, config, native eligibility state, IDE local gate, and private `AG_LS_PROXY` channel; if an Antigravity update removes/replaces a known patch, RouteGuard marks a repair pending while Antigravity is running and applies it only after Antigravity is closed, so an active agent run is not killed;
 - checks the rolling RouteGuard release periodically, verifies `SHA256SUMS.txt`, and auto-updates only while Antigravity is closed; otherwise the update is deferred safely;
 - can self-update from GitHub Releases and verifies the release ZIP against `SHA256SUMS.txt` before installing;
-- shows whether the newest Antigravity `ls-main.log` still contains the Google location-400 error;
+- validates the effective managed network policy on every watchdog/status pass and shows whether the newest Antigravity `ls-main.log` still contains the Google location-400 error;
 - GitHub Actions builds the Windows x64 package from source and publishes SHA-256 checksums.
 
 ## Important limitation

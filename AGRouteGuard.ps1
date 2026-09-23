@@ -315,10 +315,14 @@ function Set-BridgeEnvironment {
 
 function Get-BridgeProcess {
   try {
-    return @(Get-CimInstance Win32_Process -Filter "Name='agbridge.exe'" -ErrorAction SilentlyContinue |
+    return @(Get-CimInstance Win32_Process -Filter "Name='agbridge.exe'" -ErrorAction Stop |
       Where-Object { $_.ExecutablePath -eq $Bridge })
   } catch {
-    return @(Get-Process agbridge -ErrorAction SilentlyContinue)
+    return @(Get-Process -Name agbridge -ErrorAction SilentlyContinue |
+      Where-Object {
+        try { [IO.Path]::GetFullPath($_.Path) -eq [IO.Path]::GetFullPath($Bridge) }
+        catch { $false }
+      })
   }
 }
 
@@ -573,7 +577,7 @@ function Write-InjectorConfig($installDir) {
     timeout=@{connect=12000;send=30000;recv=180000}
     updates=@{enabled=$false;check_delay_ms=15000;timeout_ms=5000;notify_once=$true;allow_insecure_mirrors=$false;mirrors=@()}
     traffic_logging=$false
-    diagnostics=@{agent_ip_probe=$true}
+    diagnostics=@{agent_ip_probe=$false}
     child_injection=$true
     child_injection_mode='filtered'
     child_injection_exclude=@()
@@ -583,7 +587,7 @@ function Write-InjectorConfig($installDir) {
     )
     proxy_rules=@{
       allowed_ports=@(80,443)
-      dns_mode='proxy'
+      dns_mode='direct'
       ipv6_mode='block'
       udp_mode='block'
       udp_fallback='block'
@@ -1067,6 +1071,15 @@ function Test-PatchCurrent {
     if((Get-FileHash $dstDll -Algorithm SHA256).Hash -ne (Get-FileHash $Injector -Algorithm SHA256).Hash){ return $false }
     $cfg=Get-Content $cfgPath -Raw | ConvertFrom-Json
     if([string]$cfg._comment -ne $RouteGuardMarker){ return $false }
+    if([string]$cfg._version -ne $Version){ return $false }
+    if([string]$cfg.proxy.host -ne '127.0.0.1' -or [int]$cfg.proxy.port -ne 17890 -or [string]$cfg.proxy.type -ne 'socks5'){ return $false }
+    if(-not [bool]$cfg.fake_ip.enabled){ return $false }
+    $ports=@($cfg.proxy_rules.allowed_ports | ForEach-Object {[int]$_} | Sort-Object -Unique)
+    if($ports.Count -ne 2 -or $ports[0] -ne 80 -or $ports[1] -ne 443){ return $false }
+    if([string]$cfg.proxy_rules.dns_mode -ne 'direct'){ return $false }
+    if([string]$cfg.proxy_rules.ipv6_mode -ne 'block'){ return $false }
+    if([string]$cfg.proxy_rules.udp_mode -ne 'block' -or [string]$cfg.proxy_rules.udp_fallback -ne 'block'){ return $false }
+    if(-not [bool]$cfg.proxy_rules.routing.enabled -or [string]$cfg.proxy_rules.routing.default_action -ne 'proxy'){ return $false }
 
     $elig=@(Test-EligibilityPatch $dir)
     if($elig.Count -eq 0){ return $false }
@@ -1344,6 +1357,15 @@ function Do-Status {
     $dir=Get-InstallDir
     Say "Antigravity: $dir" 'Cyan'
     Say "version.dll installed: $([bool](Test-Path (Join-Path $dir 'version.dll')))" 'Cyan'
+    $managedCfg=Join-Path $dir 'config.json'
+    if(Test-Path $managedCfg){
+      try {
+        $mc=Get-Content $managedCfg -Raw | ConvertFrom-Json
+        Say "Managed network policy: DNS=$($mc.proxy_rules.dns_mode), UDP=$($mc.proxy_rules.udp_mode)/$($mc.proxy_rules.udp_fallback), IPv6=$($mc.proxy_rules.ipv6_mode), default=$($mc.proxy_rules.routing.default_action)" 'Cyan'
+      } catch {
+        Say 'Managed network policy: config.json is unreadable.' 'Red'
+      }
+    }
     $nativeEligibility=@(Test-EligibilityPatch $dir)
     if($nativeEligibility.Count -eq 0){
       Say 'Eligibility: no native language_server/CLI target found; this Antigravity layout is unsupported until reviewed.' 'Red'
