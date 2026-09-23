@@ -361,8 +361,18 @@ function Patch-IneligibleField($path,[switch]$Quiet) {
   # Open AG Patcher uses these exact x64 gates for two additional local checks.
   # We only touch them when the known signature matches; unknown builds are left
   # alone instead of guessing offsets.
-  $cliPattern="\x48\x85\xc0\x0f\x84....\x80\x78\x08\x00\x0f\x85...."
-  $cliPatched="\x48\x85\xc0\x0f\x84....\x48\x85\xc0\x90\x0f\x85...."
+  # Three currently observed Windows x64 CLI layouts. The longer context
+  # avoids patching a coincidental short instruction sequence.
+  $cliPatterns=@(
+    "\x48\x85\xc0\x0f\x84....\x80\x78\x08\x00\x0f\x85....\xe8....\x48\x89\x84\x24\x80\x00\x00\x00\x48\x89\x5c\x24\x50\x48\x89\x4c\x24\x70",
+    "\x48\x85\xc0\x0f\x84....\x80\x78\x08\x00\x0f\x85....\xe8....\x48\x89\x84\x24\x88\x00\x00\x00\x48\x89\x5c\x24\x50\x48\x89\x4c\x24\x78",
+    "\x48\x85\xc0\x0f\x84....\x80\x78\x08\x00\x0f\x85....\xe8....\x48\x89\x84\x24\x88\x00\x00\x00\x48\x89\x5c\x24\x50\x48\x89\x4c\x24\x70"
+  )
+  $cliPatchedPatterns=@(
+    "\x48\x85\xc0\x0f\x84....\x48\x85\xc0\x90\x0f\x85....\xe8....\x48\x89\x84\x24\x80\x00\x00\x00\x48\x89\x5c\x24\x50\x48\x89\x4c\x24\x70",
+    "\x48\x85\xc0\x0f\x84....\x48\x85\xc0\x90\x0f\x85....\xe8....\x48\x89\x84\x24\x88\x00\x00\x00\x48\x89\x5c\x24\x50\x48\x89\x4c\x24\x78",
+    "\x48\x85\xc0\x0f\x84....\x48\x85\xc0\x90\x0f\x85....\xe8....\x48\x89\x84\x24\x88\x00\x00\x00\x48\x89\x5c\x24\x50\x48\x89\x4c\x24\x70"
+  )
   $managerPattern="\x80\x78\x08\x00\x74.\x48\x8b.\x24.\x48\x89.\x60"
   $managerPatched="\xc6\x40\x08\x01\x90\x90\x48\x8b.\x24.\x48\x89.\x60"
 
@@ -372,15 +382,20 @@ function Patch-IneligibleField($path,[switch]$Quiet) {
   $hasManagerGate=$false
 
   if($name -eq 'agy.exe'){
-    $cliMatches=@([regex]::Matches($latin,$cliPattern,$rxOpt))
-    $hasCliGate=[regex]::IsMatch($latin,$cliPatched,$rxOpt)
+    foreach($pattern in $cliPatterns){
+      $cliMatches += @([regex]::Matches($latin,$pattern,$rxOpt))
+    }
+    foreach($pattern in $cliPatchedPatterns){
+      if([regex]::IsMatch($latin,$pattern,$rxOpt)){ $hasCliGate=$true }
+    }
   }
   if($name.StartsWith('language_server')){
     $managerMatches=@([regex]::Matches($latin,$managerPattern,$rxOpt))
     $hasManagerGate=[regex]::IsMatch($latin,$managerPatched,$rxOpt)
   }
 
-  $needCliGate=$cliMatches.Count -gt 0
+  $needCliGate=$cliMatches.Count -eq 1
+  $cliAmbiguous=$cliMatches.Count -gt 1
   $needManagerGate=$managerMatches.Count -eq 1
   $managerAmbiguous=$managerMatches.Count -gt 1
 
@@ -390,6 +405,7 @@ function Patch-IneligibleField($path,[switch]$Quiet) {
       if(-not $Quiet){ Say "Client binary gates already patched: $path" 'DarkGreen' }
       return $true
     }
+    if($cliAmbiguous -and -not $Quiet){ Say "CLI eligibility signature is not unique; refusing to guess: $path" 'Yellow' }
     if($managerAmbiguous -and -not $Quiet){ Say "Manager auth signature is not unique; refusing to guess: $path" 'Yellow' }
     return $false
   }
@@ -427,8 +443,10 @@ function Patch-IneligibleField($path,[switch]$Quiet) {
 
   if($needCliGate){
     $fix=[byte[]](0x48,0x85,0xc0,0x90)
-    foreach($m in $cliMatches){ [Array]::Copy($fix,0,$bytes,$m.Index+9,$fix.Length) }
-    $changes += "agy eligibility gate x$($cliMatches.Count)"
+    [Array]::Copy($fix,0,$bytes,$cliMatches[0].Index+9,$fix.Length)
+    $changes += 'agy eligibility gate x1'
+  } elseif($cliAmbiguous -and -not $Quiet) {
+    Say "CLI eligibility signature is not unique; skipped machine-code gate: $path" 'Yellow'
   }
 
   if($needManagerGate){
