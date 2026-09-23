@@ -738,6 +738,27 @@ function Show-InjectorDiagnostics {
   }
 }
 
+function Show-BridgeDiagnostics {
+  $log=Join-Path $Root 'bridge.err.log'
+  if(!(Test-Path $log)){ return }
+  try {
+    $tail=@(Get-Content $log -Tail 300 -ErrorAction Stop)
+    $pin=@($tail | Where-Object { $_ -match 'pinned upstream egress:' })
+    $changed=@($tail | Where-Object { $_ -match 'EGRESS CHANGED:' })
+    $restored=@($tail | Where-Object { $_ -match 'egress restored:' })
+    if($pin.Count -gt 0){ Say ([string]$pin[-1]) 'Cyan' }
+    if($changed.Count -gt 0){
+      $lastChange=[string]$changed[-1]
+      $lastRestore=if($restored.Count -gt 0){[string]$restored[-1]}else{''}
+      if($lastRestore -and $tail.IndexOf($lastRestore) -gt $tail.IndexOf($lastChange)){
+        Say 'Bridge egress changed earlier but was restored.' 'Yellow'
+      } else {
+        Say "Bridge FAIL-CLOSED because egress changed: $lastChange" 'Red'
+      }
+    }
+  } catch {}
+}
+
 function Show-CompetingProxySettings {
   $ours='http://127.0.0.1:17890'
   $ag=[Environment]::GetEnvironmentVariable('AG_LS_PROXY','User')
@@ -774,6 +795,7 @@ function Do-Status {
   Show-CompetingProxySettings
   Show-LiveLanguageServerEgress
   Show-InjectorDiagnostics
+  Show-BridgeDiagnostics
   if(Test-Path $ProxyCfg){
     try { Check-Egress | Out-Null } catch { Say $_.Exception.Message 'Red' }
   } else { Say 'Proxy not configured.' 'Yellow' }
