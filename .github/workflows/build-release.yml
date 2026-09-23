@@ -79,7 +79,7 @@ jobs:
           if ($releaseExists) {
             gh release upload $tag AGRouteGuard-win-x64.zip SHA256SUMS.txt --clobber
             if ($LASTEXITCODE -ne 0) { throw 'Failed to upload rolling release assets.' }
-            gh release edit $tag --title 'AG RouteGuard latest' --notes 'Rolling Windows x64 build from main. Use SHA256SUMS.txt to verify the ZIP.' --latest
+            gh release edit $tag --target $env:GITHUB_SHA --title 'AG RouteGuard latest' --notes 'Rolling Windows x64 build from main. Use SHA256SUMS.txt to verify the ZIP.' --latest
             if ($LASTEXITCODE -ne 0) { throw 'Failed to update rolling release metadata.' }
           } else {
             gh release create $tag AGRouteGuard-win-x64.zip SHA256SUMS.txt --target $env:GITHUB_SHA --title 'AG RouteGuard latest' --notes 'Rolling Windows x64 build from main. Use SHA256SUMS.txt to verify the ZIP.' --latest
