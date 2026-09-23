@@ -145,15 +145,33 @@ func main() {
 func monitorEgress(c cfg, expected string) {
     ticker := time.NewTicker(45 * time.Second)
     defer ticker.Stop()
+
+    // A single failed external IP probe should not interrupt a long agent run.
+    // Three consecutive failures, however, mean we can no longer prove that the
+    // configured sticky egress is still the one carrying traffic. At that point
+    // fail closed until the expected IP is observed again.
+    consecutiveFailures := 0
     for range ticker.C {
         ip, err := checkIP(c)
         if err != nil {
-            log.Printf("egress monitor probe failed (keeping previous state): %v", err)
+            consecutiveFailures++
+            if consecutiveFailures >= 3 {
+                if egressAllowed() {
+                    log.Printf("EGRESS UNVERIFIED: %d consecutive monitor failures; fail-closed until expected egress is proven again", consecutiveFailures)
+                }
+                setEgress(expected, false)
+            } else {
+                log.Printf("egress monitor probe failed %d/3 (keeping previous state): %v", consecutiveFailures, err)
+            }
             continue
         }
+
+        consecutiveFailures = 0
         if ip != expected {
+            if egressAllowed() {
+                log.Printf("EGRESS CHANGED: expected=%s got=%s; fail-closed until original egress returns", expected, ip)
+            }
             setEgress(expected, false)
-            log.Printf("EGRESS CHANGED: expected=%s got=%s; fail-closed until original egress returns", expected, ip)
             continue
         }
         if !egressAllowed() {
