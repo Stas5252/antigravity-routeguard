@@ -692,6 +692,16 @@ function Write-BytesAtomic($path,[byte[]]$bytes) {
   }
 }
 
+function Write-TextAtomic($path,$text,[Text.Encoding]$encoding) {
+  $tmp="$path.routeguard.$PID.tmp"
+  try {
+    [IO.File]::WriteAllText($tmp,$text,$encoding)
+    Move-Item $tmp $path -Force
+  } finally {
+    Remove-Item $tmp -Force -ErrorAction SilentlyContinue
+  }
+}
+
 function Patch-IneligibleField($path,[switch]$Quiet) {
   if(!(Test-Path $path)){ return $false }
   $bytes=[IO.File]::ReadAllBytes($path)
@@ -842,7 +852,7 @@ function Patch-IdeMainJs($installDir,[switch]$Quiet) {
 
     $meta=Save-PatchBackup $path 'ide-main-js'
     $new=[regex]::Replace($text,$pattern,'${1}true',1)
-    [IO.File]::WriteAllText($path,$new,(New-Object Text.UTF8Encoding($false)))
+    Write-TextAtomic $path $new (New-Object Text.UTF8Encoding($false))
     Finish-PatchBackup $meta $path
     $patched=$true
     if(-not $Quiet){ Say "IDE isGoogleInternal gate patched: $path" 'Green' }
@@ -1275,6 +1285,8 @@ function Restore-EligibilityBackups {
       if($m.patched_hash -and $current -eq $m.patched_hash){
         Copy-Item $m.backup $m.target -Force
         Say "Restored eligibility backup: $($m.target)" 'Green'
+        Remove-Item $m.backup -Force -ErrorAction SilentlyContinue
+        Remove-Item $metaFile.FullName -Force -ErrorAction SilentlyContinue
       } else {
         Say "Skipped stale backup (target changed since patch): $($m.target)" 'Yellow'
       }
