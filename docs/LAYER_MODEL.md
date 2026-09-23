@@ -6,7 +6,7 @@ This document records the failure layers RouteGuard is designed around. The impo
 
 Known IDE builds include a local branch around `isGoogleInternal`. Open AG Patcher handles this by changing the branch input after `resetIsTierGCPTos()` to `true`.
 
-RouteGuard 0.3 mirrors the same idea with a narrow regex against the known Antigravity `main.js` pattern and backs up the file before changing it.
+RouteGuard 0.4.1 mirrors the same idea with a narrow regex against the known Antigravity `main.js` pattern and backs up the file before changing it.
 
 Purpose: remove a **client-side** sign-in/region gate.
 
@@ -22,7 +22,7 @@ ineligible -> inexigible
 
 This changes the protobuf field name the client gates on without changing binary size or offsets. The same substring also changes `ineligible_tiers` consistently.
 
-RouteGuard applies this only when the stock signature is present, stores a per-file backup + original/patched SHA-256, and re-applies after an Antigravity update.
+RouteGuard applies the same-length field rewrite when present and separately recognizes the current Windows x64 CLI/manager machine-code gates. Known machine signatures are patched without guessed offsets; unknown layouts are reported rather than modified. Per-file backups keep original/patched SHA-256 values and survive additional RouteGuard patches on the same Antigravity build.
 
 Purpose: remove the local/client interpretation of an account eligibility field.
 
@@ -72,7 +72,9 @@ RouteGuard listens on both loopback addresses at TCP/443. It does not terminate 
 
 Why this exists: even a transport that ignores the ordinary proxy setting still resolves the gate hostname to RouteGuard and cannot silently escape to the ISP.
 
-Known gate-host AAAA queries receive NOERROR/NODATA, so the gate cannot escape over native IPv6.
+This is a **fallback layer**, not a prerequisite for the primary process-proxy path. If the local DNS/443 listener cannot be bound because another VPN or service owns the port, RouteGuard removes its own NRPT rules and continues with `AG_LS_PROXY` + the Winsock hook rather than leaving a dead DNS policy installed.
+
+Known gate-host AAAA queries receive NOERROR/NODATA, so the gate cannot escape over native IPv6. RouteGuard flushes the Windows DNS cache after adding/removing these exact-gate rules so a previously cached real Google address does not survive the transition.
 
 ## 6. QUIC / UDP / IPv6
 
@@ -85,13 +87,13 @@ ipv6_mode     = block
 default route = proxy
 ```
 
-The aim is fail-closed behaviour: a broken proxy should cause a failed request, not a request from a different public IP.
+The aim is fail-closed behaviour: a broken proxy should cause a failed request, not a request from a different public IP. This is intentionally stricter than compatibility-first routing. Some newer Electron/Chromium flows prefer QUIC and may not always fall back cleanly; RouteGuard does **not** silently allow direct UDP because doing so would re-introduce an egress leak.
 
 ## 7. Upstream proxy identity
 
 A supported country is not enough by itself. Public Antigravity reports show the same account succeeding on one egress and failing on another, including differences between hosting/datacenter IPs.
 
-RouteGuard checks the upstream egress three times before Setup/Repair and refuses a changing/rotating egress. Use a sticky/static proxy for agent work.
+RouteGuard checks the upstream egress three times before Setup/Repair and refuses a changing/rotating egress. The bridge also pins the observed IP during runtime: a changed IP, or three consecutive inability-to-verify events, blocks new proxied connections until the expected IP is seen again. Existing streams are not deliberately killed. Use a sticky/static proxy for agent work.
 
 A stable route still cannot guarantee that Google accepts a particular ASN or IP reputation.
 
@@ -120,7 +122,7 @@ Antigravity updates can replace:
 - `language_server*.exe`
 - `main.js`
 
-RouteGuard's watchdog checks every five minutes and re-applies known signatures. Unknown signatures are not guessed.
+RouteGuard's watchdog checks every five minutes. It also checks the private `AG_LS_PROXY` value and known IDE/native eligibility state. If Antigravity is currently running, repair is queued rather than killing an active `language_server`; the repair is applied after Antigravity is closed. Unknown signatures are not guessed.
 
 The RouteGuard release itself is rebuilt in GitHub Actions. The updater downloads the ZIP plus `SHA256SUMS.txt` and verifies the archive before replacing local RouteGuard files.
 
@@ -136,3 +138,20 @@ RouteGuard stores backups for eligibility-patched files with:
 Restore only writes a backup when the current file still has the exact patched hash. If Antigravity updated the file meanwhile, the stale backup is skipped rather than downgrading the application.
 
 NRPT rules created by RouteGuard are tagged with the RouteGuard comment and Restore removes only those rules.
+
+
+## 11. Deterministic launch
+
+Windows user environment changes are persistent but a long-running shell such as Explorer may not immediately refresh its inherited environment. `Launch.cmd` starts Antigravity from RouteGuard's own process with:
+
+```text
+AG_LS_PROXY=http://127.0.0.1:17890
+```
+
+set explicitly for that process tree. This makes the first post-install test deterministic even if Explorer still has an old environment block. The DNS fallback and Winsock hook remain independent layers.
+
+## 12. What a fully green RouteGuard result proves
+
+A green local report proves that the known client gates are patched, the language-server/private proxy path is present, the configured SOCKS egress is stable, the Google/CloudCode TLS endpoints are reachable through it, and no known local conflict was found.
+
+It does **not** prove that Google's backend will classify the account or proxy IP as eligible. A server-side `400 FAILED_PRECONDITION` can therefore remain after every local/network check is green; that state must be treated as a backend/account/IP-classification outcome rather than silently adding more local patches.
