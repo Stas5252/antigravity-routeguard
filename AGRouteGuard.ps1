@@ -413,29 +413,30 @@ function Test-EligibilityPatch($installDir) {
 
 function Apply-Patch([switch]$Quiet) {
   if(!(Test-Path $Injector)){ throw 'version.dll payload missing. Run Setup/Repair from the release package.' }
-  $exe = Find-Antigravity
-  $dir = Split-Path $exe -Parent
+  $dir=Get-InstallDir
   Backup-IfNeeded $dir 'version.dll'
   Backup-IfNeeded $dir 'config.json'
 
   Copy-Item $Injector (Join-Path $dir 'version.dll') -Force
   Write-InjectorConfig $dir
+  Apply-EligibilityPatches $dir -Quiet:$Quiet | Out-Null
   Set-Content $InstallDirFile $dir -Encoding UTF8
-  if(-not $Quiet){ Say "Patched: $dir" 'Green' }
+  if(-not $Quiet){ Say "RouteGuard applied: $dir" 'Green' }
 }
 
 function Test-PatchCurrent {
   try {
-    $exe = Find-Antigravity
-    $dir = Split-Path $exe -Parent
-    $dstDll = Join-Path $dir 'version.dll'
-    $cfgPath = Join-Path $dir 'config.json'
+    $dir=Get-InstallDir
+    $dstDll=Join-Path $dir 'version.dll'
+    $cfgPath=Join-Path $dir 'config.json'
     if(!(Test-Path $dstDll) -or !(Test-Path $Injector) -or !(Test-Path $cfgPath)){ return $false }
     if((Get-FileHash $dstDll -Algorithm SHA256).Hash -ne (Get-FileHash $Injector -Algorithm SHA256).Hash){ return $false }
-    try {
-      $cfg = Get-Content $cfgPath -Raw | ConvertFrom-Json
-      return [string]$cfg._comment -eq $RouteGuardMarker
-    } catch { return $false }
+    $cfg=Get-Content $cfgPath -Raw | ConvertFrom-Json
+    if([string]$cfg._comment -ne $RouteGuardMarker){ return $false }
+
+    $elig=@(Test-EligibilityPatch $dir)
+    if(@($elig | Where-Object { $_.stock -and -not $_.patched }).Count -gt 0){ return $false }
+    return $true
   } catch { return $false }
 }
 
