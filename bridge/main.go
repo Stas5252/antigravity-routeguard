@@ -57,13 +57,21 @@ func main() {
         log.Fatal("AG_UPSTREAM_HOST is required")
     }
 
-    if len(os.Args) > 1 && os.Args[1] == "--check" {
-        ip, err := checkIP(c)
-        if err != nil {
-            log.Fatal(err)
+    if len(os.Args) > 1 {
+        switch os.Args[1] {
+        case "--check":
+            ip, err := checkIP(c)
+            if err != nil {
+                log.Fatal(err)
+            }
+            fmt.Println(ip)
+            return
+        case "--probe-google":
+            if err := probeGoogle(c); err != nil {
+                log.Fatal(err)
+            }
+            return
         }
-        fmt.Println(ip)
-        return
     }
 
     // The ordinary per-process path: the injected Antigravity processes connect
@@ -476,6 +484,38 @@ func dialViaUpstream(c cfg, host string, port uint16) (net.Conn, error) {
     return conn, nil
 }
 
+func probeGoogle(c cfg) error {
+    hosts := []string{
+        "oauth2.googleapis.com",
+        "cloudcode-pa.googleapis.com",
+        "daily-cloudcode-pa.googleapis.com",
+    }
+    var failed []string
+    for _, host := range hosts {
+        started := time.Now()
+        raw, err := dialViaUpstream(c, host, 443)
+        if err == nil {
+            tlsConn := tls.Client(raw, &tls.Config{
+                ServerName: host,
+                MinVersion: tls.VersionTLS12,
+            })
+            _ = tlsConn.SetDeadline(time.Now().Add(15 * time.Second))
+            err = tlsConn.Handshake()
+            _ = tlsConn.Close()
+        }
+        if err != nil {
+            fmt.Printf("%s FAIL %v\n", host, err)
+            failed = append(failed, host)
+            continue
+        }
+        fmt.Printf("%s OK %dms\n", host, time.Since(started).Milliseconds())
+    }
+    if len(failed) > 0 {
+        return fmt.Errorf("Google TLS probe failed for: %s", strings.Join(failed, ", "))
+    }
+    return nil
+}
+
 func checkIP(c cfg) (string, error) {
     raw, err := dialViaUpstream(c, "api.ipify.org", 443)
     if err != nil {
@@ -487,7 +527,7 @@ func checkIP(c cfg) (string, error) {
     if err := tlsConn.Handshake(); err != nil {
         return "", err
     }
-    if _, err := io.WriteString(tlsConn, "GET / HTTP/1.1\r\nHost: api.ipify.org\r\nConnection: close\r\nUser-Agent: AGRouteGuard/0.3\r\n\r\n"); err != nil {
+    if _, err := io.WriteString(tlsConn, "GET / HTTP/1.1\r\nHost: api.ipify.org\r\nConnection: close\r\nUser-Agent: AGRouteGuard/0.4\r\n\r\n"); err != nil {
         return "", err
     }
     b, err := io.ReadAll(tlsConn)
