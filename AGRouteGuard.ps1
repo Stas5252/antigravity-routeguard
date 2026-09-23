@@ -258,6 +258,159 @@ function Backup-IfNeeded($dir,$name) {
   }
 }
 
+function Get-PathKey($path) {
+  $full=[IO.Path]::GetFullPath($path).ToLowerInvariant()
+  $sha=[Security.Cryptography.SHA256]::Create()
+  try {
+    $bytes=[Text.Encoding]::UTF8.GetBytes($full)
+    return ([BitConverter]::ToString($sha.ComputeHash($bytes))).Replace('-','').ToLowerInvariant()
+  } finally { $sha.Dispose() }
+}
+
+function Save-PatchBackup($path,$kind) {
+  Ensure-Root
+  $key=Get-PathKey $path
+  $bak=Join-Path $BackupDir "$key.bak"
+  $meta=Join-Path $BackupDir "$key.json"
+  Copy-Item $path $bak -Force
+  [pscustomobject]@{
+    target=[IO.Path]::GetFullPath($path)
+    kind=$kind
+    original_hash=(Get-FileHash $path -Algorithm SHA256).Hash
+    patched_hash=''
+    backup=$bak
+  } | ConvertTo-Json | Set-Content $meta -Encoding UTF8
+  return $meta
+}
+
+function Finish-PatchBackup($metaPath,$target) {
+  if(!(Test-Path $metaPath)){ return }
+  $m=Get-Content $metaPath -Raw | ConvertFrom-Json
+  $m.patched_hash=(Get-FileHash $target -Algorithm SHA256).Hash
+  $m | ConvertTo-Json | Set-Content $metaPath -Encoding UTF8
+}
+
+function Write-BytesAtomic($path,[byte[]]$bytes) {
+  $tmp="$path.routeguard.$PID.tmp"
+  try {
+    [IO.File]::WriteAllBytes($tmp,$bytes)
+    Move-Item $tmp $path -Force
+  } finally {
+    Remove-Item $tmp -Force -ErrorAction SilentlyContinue
+  }
+}
+
+function Patch-IneligibleField($path,[switch]$Quiet) {
+  if(!(Test-Path $path)){ return $false }
+  $bytes=[IO.File]::ReadAllBytes($path)
+  $ascii=[Text.Encoding]::ASCII.GetString($bytes)
+  if($ascii.Contains('inexigible')){
+    if(-not $Quiet){ Say "Eligibility field already patched: $path" 'DarkGreen' }
+    return $true
+  }
+  if(-not $ascii.Contains('ineligible')){ return $false }
+
+  $meta=Save-PatchBackup $path 'ineligible-field'
+  $to=[Text.Encoding]::ASCII.GetBytes('inexigible')
+  $pos=0
+  $count=0
+  while($true){
+    $idx=$ascii.IndexOf('ineligible',$pos,[StringComparison]::Ordinal)
+    if($idx -lt 0){ break }
+    [Array]::Copy($to,0,$bytes,$idx,$to.Length)
+    $count++
+    $pos=$idx+10
+  }
+  Write-BytesAtomic $path $bytes
+  Finish-PatchBackup $meta $path
+  if(-not $Quiet){ Say "Eligibility/account client gate patched ($count occurrence(s)): $path" 'Green' }
+  return $true
+}
+
+function Patch-IdeMainJs($installDir,[switch]$Quiet) {
+  $paths=@(
+    (Join-Path $installDir 'resources\app\out\main.js'),
+    (Join-Path $installDir 'resources\app\main.js')
+  )
+  $pattern='(resetIsTierGCPTos\(\),)this\.[A-Za-z_$0-9]+\.isGoogleInternal'
+  $done='resetIsTierGCPTos(),true'
+  $patched=$false
+
+  foreach($path in $paths){
+    if(!(Test-Path $path)){ continue }
+    $text=Get-Content $path -Raw -Encoding UTF8
+    if($text.Contains($done)){
+      $patched=$true
+      if(-not $Quiet){ Say "IDE account-region gate already patched: $path" 'DarkGreen' }
+      continue
+    }
+    if(-not [regex]::IsMatch($text,$pattern)){ continue }
+
+    $meta=Save-PatchBackup $path 'ide-main-js'
+    $new=[regex]::Replace($text,$pattern,'$1true')
+    [IO.File]::WriteAllText($path,$new,(New-Object Text.UTF8Encoding($false)))
+    Finish-PatchBackup $meta $path
+    $patched=$true
+    if(-not $Quiet){ Say "IDE isGoogleInternal gate patched: $path" 'Green' }
+  }
+
+  if($patched){
+    foreach($cache in @(
+      (Join-Path $env:APPDATA 'Antigravity IDE\CachedData'),
+      (Join-Path $env:APPDATA 'Antigravity IDE\Code Cache\js'),
+      (Join-Path $env:APPDATA 'Antigravity\CachedData'),
+      (Join-Path $env:APPDATA 'Antigravity\Code Cache\js')
+    )){
+      Remove-Item $cache -Recurse -Force -ErrorAction SilentlyContinue
+    }
+  }
+  return $patched
+}
+
+function Get-EligibilityTargets($installDir) {
+  $out=@()
+  foreach($p in @(
+    (Join-Path $installDir 'agy.exe'),
+    (Join-Path $installDir 'resources\bin\language_server.exe'),
+    (Join-Path $installDir 'resources\app\extensions\antigravity\bin\language_server_windows_x64.exe'),
+    (Join-Path $installDir 'resources\app\extensions\antigravity\bin\language_server.exe')
+  )){
+    if(Test-Path $p){ $out += $p }
+  }
+  foreach($p in @(Get-ChildItem $installDir -Filter 'language_server*.exe' -Recurse -File -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName)){
+    if($out -notcontains $p){ $out += $p }
+  }
+  return $out
+}
+
+function Apply-EligibilityPatches($installDir,[switch]$Quiet) {
+  $count=0
+  foreach($p in @(Get-EligibilityTargets $installDir)){
+    try { if(Patch-IneligibleField $p -Quiet:$Quiet){ $count++ } }
+    catch {
+      if(-not $Quiet){ Say "Eligibility patch deferred for $p : $($_.Exception.Message)" 'Yellow' }
+    }
+  }
+  try { if(Patch-IdeMainJs $installDir -Quiet:$Quiet){ $count++ } }
+  catch { if(-not $Quiet){ Say "IDE JS patch deferred: $($_.Exception.Message)" 'Yellow' } }
+  return $count
+}
+
+function Test-EligibilityPatch($installDir) {
+  $results=@()
+  foreach($p in @(Get-EligibilityTargets $installDir)){
+    try {
+      $s=[Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($p))
+      $results += [pscustomobject]@{
+        path=$p
+        patched=$s.Contains('inexigible')
+        stock=$s.Contains('ineligible')
+      }
+    } catch {}
+  }
+  return $results
+}
+
 function Apply-Patch([switch]$Quiet) {
   if(!(Test-Path $Injector)){ throw 'version.dll payload missing. Run Setup/Repair from the release package.' }
   $exe = Find-Antigravity
