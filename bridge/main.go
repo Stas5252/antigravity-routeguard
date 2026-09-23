@@ -25,6 +25,26 @@ var gateHosts = map[string]net.IP{
     "daily-cloudcode-pa.googleapis.com": net.IPv4(127, 65, 71, 2),
 }
 
+var egressGuard struct {
+    sync.RWMutex
+    expected string
+    healthy  bool
+}
+
+func setEgress(expected string, healthy bool) {
+    egressGuard.Lock()
+    egressGuard.expected = expected
+    egressGuard.healthy = healthy
+    egressGuard.Unlock()
+}
+
+func egressAllowed() bool {
+    egressGuard.RLock()
+    ok := egressGuard.healthy
+    egressGuard.RUnlock()
+    return ok
+}
+
 type cfg struct {
     UpstreamHost string
     UpstreamPort string
@@ -74,6 +94,14 @@ func main() {
         }
     }
 
+    initialIP, err := checkIP(c)
+    if err != nil {
+        log.Fatalf("upstream egress preflight failed: %v", err)
+    }
+    setEgress(initialIP, true)
+    log.Printf("pinned upstream egress: %s", initialIP)
+    go monitorEgress(c, initialIP)
+
     // The ordinary per-process path: the injected Antigravity processes connect
     // to this local no-auth SOCKS listener. It bridges to an authenticated
     // upstream SOCKS proxy.
@@ -114,6 +142,27 @@ func main() {
     select {}
 }
 
+func monitorEgress(c cfg, expected string) {
+    ticker := time.NewTicker(45 * time.Second)
+    defer ticker.Stop()
+    for range ticker.C {
+        ip, err := checkIP(c)
+        if err != nil {
+            log.Printf("egress monitor probe failed (keeping previous state): %v", err)
+            continue
+        }
+        if ip != expected {
+            setEgress(expected, false)
+            log.Printf("EGRESS CHANGED: expected=%s got=%s; fail-closed until original egress returns", expected, ip)
+            continue
+        }
+        if !egressAllowed() {
+            log.Printf("egress restored: %s", ip)
+        }
+        setEgress(expected, true)
+    }
+}
+
 func serveSOCKS(ln net.Listener, c cfg) {
     for {
         conn, err := ln.Accept()
@@ -134,6 +183,9 @@ func serveGate(ln net.Listener, c cfg, host string) {
         }
         go func() {
             defer client.Close()
+            if !egressAllowed() {
+                return
+            }
             upstream, err := dialViaUpstream(c, host, 443)
             if err != nil {
                 log.Printf("gate %s upstream: %v", host, err)
@@ -168,6 +220,9 @@ func splice(a, b net.Conn) {
 
 func handleClient(client net.Conn, c cfg) {
     defer client.Close()
+    if !egressAllowed() {
+        return
+    }
     _ = client.SetDeadline(time.Now().Add(20 * time.Second))
     r := bufio.NewReader(client)
     first, err := r.Peek(1)
