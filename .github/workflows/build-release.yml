@@ -16,9 +16,9 @@ jobs:
   windows-x64:
     runs-on: windows-2022
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: '1.23.x'
 
@@ -72,7 +72,7 @@ jobs:
           Compress-Archive -Path dist/* -DestinationPath AGRouteGuard-win-x64.zip -Force
           (Get-FileHash AGRouteGuard-win-x64.zip -Algorithm SHA256).Hash.ToLower() + '  AGRouteGuard-win-x64.zip' | Set-Content SHA256SUMS.txt -Encoding ascii
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: AGRouteGuard-win-x64
           path: |
