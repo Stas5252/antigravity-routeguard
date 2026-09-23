@@ -14,7 +14,6 @@ $env:AG_UPSTREAM_PORT = [string]$cfg.port
 $env:AG_UPSTREAM_USER = [string]$cfg.username
 $env:AG_UPSTREAM_PASS = $plain
 $env:AG_LOCAL_ADDR = if ($cfg.local_addr) { [string]$cfg.local_addr } else { '127.0.0.1:17890' }
-$env:AG_LOCAL_HTTP_ADDR = if ($cfg.local_http_addr) { [string]$cfg.local_http_addr } else { '127.0.0.1:17891' }
 
 $existing = Get-CimInstance Win32_Process -Filter "Name='agbridge.exe'" -ErrorAction SilentlyContinue |
   Where-Object { $_.ExecutablePath -eq $Bridge }
