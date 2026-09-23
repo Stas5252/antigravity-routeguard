@@ -674,6 +674,49 @@ function Do-Watchdog {
   }
 }
 
+function Get-LatestInjectorLog {
+  $roots=@()
+  try { $roots += (Join-Path (Get-InstallDir) 'logs') } catch {}
+  $roots += (Join-Path $env:TEMP 'antigravity-proxy-logs')
+  $files=@()
+  foreach($root in $roots){
+    if(Test-Path $root){
+      $files += @(Get-ChildItem $root -Filter 'proxy*.log' -File -ErrorAction SilentlyContinue)
+    }
+  }
+  $hit=$files | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+  if($hit){ return $hit.FullName }
+  return $null
+}
+
+function Show-InjectorDiagnostics {
+  $log=Get-LatestInjectorLog
+  if(!$log){
+    Say 'Injector diagnostics: no proxy log yet (launch Antigravity once).' 'Yellow'
+    return
+  }
+  try {
+    $tail=@(Get-Content $log -Tail 1200 -ErrorAction Stop)
+    $ls=@($tail | Where-Object { $_ -match 'language_server' -and $_ -match '注入|inject' })
+    $gate=@($tail | Where-Object {
+      $_ -match 'cloudcode-pa\.googleapis\.com' -and $_ -match 'SOCKS5|tunnel|隧道|CONNECT'
+    })
+    $ip=@($tail | Where-Object { $_ -match '\[诊断/IP\]|agent.*ip|egress' })
+    if($ls.Count -gt 0){ Say 'Injector saw language_server process.' 'Green' }
+    else { Say 'Injector has not yet logged language_server injection.' 'Yellow' }
+    if($gate.Count -gt 0){ Say 'Injector saw CloudCode traffic on the proxy path.' 'Green' }
+    else { Say 'Injector has not yet logged CloudCode traffic.' 'Yellow' }
+    if($ip.Count -gt 0){
+      $last=[string]$ip[-1]
+      if($last.Length -gt 350){ $last=$last.Substring(0,350)+'...' }
+      Say "Injector egress diagnostic: $last" 'Cyan'
+    }
+    Say "Injector log: $log" 'DarkGray'
+  } catch {
+    Say "Injector diagnostics unavailable: $($_.Exception.Message)" 'Yellow'
+  }
+}
+
 function Show-CompetingProxySettings {
   $ours='http://127.0.0.1:17890'
   $ag=[Environment]::GetEnvironmentVariable('AG_LS_PROXY','User')
@@ -709,6 +752,7 @@ function Do-Status {
   Say "Patch current: $(Test-PatchCurrent)" 'Cyan'
   Show-CompetingProxySettings
   Show-LiveLanguageServerEgress
+  Show-InjectorDiagnostics
   if(Test-Path $ProxyCfg){
     try { Check-Egress | Out-Null } catch { Say $_.Exception.Message 'Red' }
   } else { Say 'Proxy not configured.' 'Yellow' }
