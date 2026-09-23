@@ -9,6 +9,7 @@ import (
     "io"
     "log"
     "net"
+    "net/http"
     "os"
     "strconv"
     "strings"
@@ -71,10 +72,41 @@ func envCfg() cfg {
     }
 }
 
+func validateConfig(c cfg) error {
+    if strings.TrimSpace(c.UpstreamHost) == "" {
+        return errors.New("AG_UPSTREAM_HOST is required")
+    }
+    port, err := strconv.Atoi(c.UpstreamPort)
+    if err != nil || port < 1 || port > 65535 {
+        return fmt.Errorf("invalid upstream port %q", c.UpstreamPort)
+    }
+    if len([]byte(c.Username)) > 255 || len([]byte(c.Password)) > 255 {
+        return errors.New("SOCKS5 username/password must be <=255 bytes")
+    }
+
+    host, portText, err := net.SplitHostPort(c.Listen)
+    if err != nil {
+        return fmt.Errorf("invalid local listen address %q: %w", c.Listen, err)
+    }
+    ip := net.ParseIP(strings.Trim(host, "[]"))
+    if ip == nil || !ip.IsLoopback() {
+        return fmt.Errorf("local bridge must bind to loopback, got %q", c.Listen)
+    }
+
+    // Refuse the obvious self-loop configuration.
+    upHost := strings.Trim(strings.ToLower(c.UpstreamHost), "[]")
+    localHost := strings.Trim(strings.ToLower(host), "[]")
+    if (upHost == localHost || (net.ParseIP(upHost) != nil && net.ParseIP(upHost).Equal(ip))) &&
+        c.UpstreamPort == portText {
+        return errors.New("upstream proxy points back to the local RouteGuard listener")
+    }
+    return nil
+}
+
 func main() {
     c := envCfg()
-    if c.UpstreamHost == "" {
-        log.Fatal("AG_UPSTREAM_HOST is required")
+    if err := validateConfig(c); err != nil {
+        log.Fatal(err)
     }
 
     if len(os.Args) > 1 {
@@ -634,7 +666,7 @@ func probeGoogle(c cfg) error {
     var failed []string
     for _, host := range hosts {
         started := time.Now()
-        raw, err := dialViaUpstream(c, host, 443)
+        raw, err := dialViaUpstreamRetry(c, host, 443, 3)
         if err == nil {
             tlsConn := tls.Client(raw, &tls.Config{
                 ServerName: host,
@@ -679,7 +711,7 @@ func checkIP(c cfg) (string, error) {
 }
 
 func checkIPVia(c cfg, host, path string) (string, error) {
-    raw, err := dialViaUpstream(c, host, 443)
+    raw, err := dialViaUpstreamRetry(c, host, 443, 2)
     if err != nil {
         return "", err
     }
@@ -690,20 +722,34 @@ func checkIPVia(c cfg, host, path string) (string, error) {
     if err := tlsConn.Handshake(); err != nil {
         return "", err
     }
-    req := fmt.Sprintf("GET %s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\nUser-Agent: AGRouteGuard/0.4\r\nAccept: text/plain\r\n\r\n", path, host)
-    if _, err := io.WriteString(tlsConn, req); err != nil {
-        return "", err
-    }
-    b, err := io.ReadAll(io.LimitReader(tlsConn, 64*1024))
+
+    req, err := http.NewRequest(http.MethodGet, "https://"+host+path, nil)
     if err != nil {
         return "", err
     }
-    parts := strings.SplitN(string(b), "\r\n\r\n", 2)
-    if len(parts) != 2 {
-        return "", errors.New("unexpected HTTP response")
+    req.Host = host
+    req.Header.Set("User-Agent", "AGRouteGuard/0.4")
+    req.Header.Set("Accept", "text/plain")
+    req.Header.Set("Accept-Encoding", "identity")
+    req.Close = true
+
+    if err := req.Write(tlsConn); err != nil {
+        return "", err
     }
-    body := strings.TrimSpace(parts[1])
-    // Keep only the first token/line. Public IP services may include a final LF.
+    resp, err := http.ReadResponse(bufio.NewReader(tlsConn), req)
+    if err != nil {
+        return "", err
+    }
+    defer resp.Body.Close()
+    if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+        return "", fmt.Errorf("%s returned HTTP %d", host, resp.StatusCode)
+    }
+
+    b, err := io.ReadAll(io.LimitReader(resp.Body, 4096))
+    if err != nil {
+        return "", err
+    }
+    body := strings.TrimSpace(string(b))
     if fields := strings.Fields(body); len(fields) > 0 {
         body = fields[0]
     }
