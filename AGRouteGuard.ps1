@@ -73,6 +73,12 @@ function Save-Proxy {
   Say 'Proxy credentials saved with Windows DPAPI for this Windows user.' 'Green'
 }
 
+function Copy-IfDifferentPath($source,$destination) {
+  $src = [IO.Path]::GetFullPath($source)
+  $dst = [IO.Path]::GetFullPath($destination)
+  if($src -ne $dst){ Copy-Item $src $dst -Force }
+}
+
 function Install-Files {
   Ensure-Root
   $required = @('agbridge.exe','version.dll','Start-Bridge.ps1','AGRouteGuard.ps1')
@@ -80,10 +86,10 @@ function Install-Files {
     $src = if($f -eq 'Start-Bridge.ps1'){ Join-Path $PSScriptRoot 'Start-Bridge.ps1' } else { Join-Path $PSScriptRoot $f }
     if(!(Test-Path $src)){ throw "$f is missing from the release package." }
   }
-  Copy-Item (Join-Path $PSScriptRoot 'agbridge.exe') $Bridge -Force
-  Copy-Item (Join-Path $PSScriptRoot 'version.dll') $Injector -Force
-  Copy-Item (Join-Path $PSScriptRoot 'Start-Bridge.ps1') $StartBridge -Force
-  if((Resolve-Path $PSCommandPath).Path -ne $InstalledScript){ Copy-Item $PSCommandPath $InstalledScript -Force }
+  Copy-IfDifferentPath (Join-Path $PSScriptRoot 'agbridge.exe') $Bridge
+  Copy-IfDifferentPath (Join-Path $PSScriptRoot 'version.dll') $Injector
+  Copy-IfDifferentPath (Join-Path $PSScriptRoot 'Start-Bridge.ps1') $StartBridge
+  Copy-IfDifferentPath $PSCommandPath $InstalledScript
 }
 
 function Set-BridgeEnvironment {
