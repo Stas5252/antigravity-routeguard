@@ -277,8 +277,8 @@ function Get-BridgeProcess {
 function Stop-BridgeNow {
   foreach($p in @(Get-BridgeProcess)){
     try {
-      $pid=if($null -ne $p.ProcessId){[int]$p.ProcessId}else{[int]$p.Id}
-      Stop-Process -Id $pid -Force -ErrorAction Stop
+      $procId=if($null -ne $p.ProcessId){[int]$p.ProcessId}else{[int]$p.Id}
+      Stop-Process -Id $procId -Force -ErrorAction Stop
     } catch {}
   }
 }
