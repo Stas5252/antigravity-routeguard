@@ -1,0 +1,67 @@
+name: build-release
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+
+permissions:
+  contents: write
+
+jobs:
+  windows-x64:
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23.x'
+
+      - name: Validate PowerShell syntax
+        shell: pwsh
+        run: |
+          [void][scriptblock]::Create((Get-Content AGRouteGuard.ps1 -Raw))
+          [void][scriptblock]::Create((Get-Content scripts/Start-Bridge.ps1 -Raw))
+
+      - name: Test and build authenticated SOCKS bridge
+        shell: pwsh
+        run: |
+          go test ./...
+          New-Item -ItemType Directory -Force dist | Out-Null
+          go build -trimpath -ldflags "-s -w" -o dist/agbridge.exe ./bridge
+
+      - name: Build pinned Antigravity proxy injector from source
+        shell: pwsh
+        run: |
+          git clone https://github.com/yuaotian/antigravity-proxy.git upstream
+          cd upstream
+          git checkout 32785d2098c9a07c6b7060f47d04a17ac0e5a431
+          ./build.ps1 -Config Release -Arch x64 -SkipTests
+          Copy-Item output/ide/version.dll ../dist/version.dll
+
+      - name: Package
+        shell: pwsh
+        run: |
+          Copy-Item AGRouteGuard.ps1 dist/AGRouteGuard.ps1
+          Copy-Item scripts/Start-Bridge.ps1 dist/Start-Bridge.ps1
+          Copy-Item README.md dist/README.md
+          Copy-Item THIRD_PARTY_NOTICES.md dist/THIRD_PARTY_NOTICES.md
+          Copy-Item LICENSE dist/LICENSE
+          Compress-Archive -Path dist/* -DestinationPath AGRouteGuard-win-x64.zip -Force
+          (Get-FileHash AGRouteGuard-win-x64.zip -Algorithm SHA256).Hash.ToLower() + '  AGRouteGuard-win-x64.zip' | Set-Content SHA256SUMS.txt -Encoding ascii
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AGRouteGuard-win-x64
+          path: |
+            AGRouteGuard-win-x64.zip
+            SHA256SUMS.txt
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create $env:GITHUB_REF_NAME AGRouteGuard-win-x64.zip SHA256SUMS.txt --generate-notes
