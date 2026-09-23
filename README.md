@@ -1,6 +1,6 @@
 # AG RouteGuard
 
-AG RouteGuard is a Windows-only Antigravity compatibility/unlock layer. It handles **local eligibility checks, CloudCode gate routing, authenticated SOCKS5 egress, leak prevention, diagnostics, rollback, and auto-repair after Antigravity updates.**
+AG RouteGuard is a Windows-only Antigravity compatibility/unlock layer. Current release line: **0.4.x**. It handles **local eligibility checks, CloudCode gate routing, authenticated SOCKS5 egress, leak prevention, diagnostics, rollback, and auto-repair after Antigravity updates.**
 
 ## Why this exists
 
@@ -51,12 +51,14 @@ For the gate fallback, Windows NRPT points only `cloudcode-pa.googleapis.com` an
 - supports authenticated SOCKS5 upstream proxies;
 - stores the upstream password using Windows DPAPI for the current Windows user;
 - verifies the real proxy egress three times before patching and rejects rotating/changing egress;
+- verifies TLS connectivity through that same proxy to `oauth2.googleapis.com`, `cloudcode-pa.googleapis.com`, and `daily-cloudcode-pa.googleapis.com` before Setup/Repair;
 - patches the known IDE `isGoogleInternal` local gate when its exact pattern is present;
 - patches the language-server/CLI eligibility field with the same-length `ineligible -> inexigible` rewrite used by current unlockers;
 - installs tagged NRPT rules only for the two CloudCode gate hosts and answers their AAAA queries with NODATA to prevent an IPv6 escape;
 - keeps backups and supports Restore;
 - starts the bridge at Windows logon;
-- runs a watchdog every 5 minutes: if an Antigravity update removes/replaces the hook, RouteGuard restores it automatically;
+- runs a watchdog every 5 minutes: if an Antigravity update removes/replaces the hook, RouteGuard marks a repair pending while Antigravity is running and applies it only after Antigravity is closed, so an active agent run is not killed;
+- checks the rolling RouteGuard release periodically, verifies `SHA256SUMS.txt`, and auto-updates only while Antigravity is closed; otherwise the update is deferred safely;
 - can self-update from GitHub Releases and verifies the release ZIP against `SHA256SUMS.txt` before installing;
 - shows whether the newest Antigravity `ls-main.log` still contains the Google location-400 error;
 - GitHub Actions builds the Windows x64 package from source and publishes SHA-256 checksums.
@@ -71,7 +73,9 @@ RouteGuard can make the network path deterministic. It **cannot guarantee that G
 2. Verify the ZIP checksum.
 3. Extract the ZIP.
 4. Close Antigravity completely.
-5. Run:
+5. Double-click **`Install.cmd`**. It launches `AGRouteGuard.ps1 -Action Setup` and requests elevation only for the Windows DNS/NRPT part.
+
+PowerShell equivalent:
 
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass
@@ -96,7 +100,7 @@ RouteGuard does not need Happ/TUN for the Antigravity path. Using a second VPN l
 .\AGRouteGuard.ps1 -Action Restore
 ```
 
-`Status` verifies the upstream egress, local eligibility patch state, NRPT rules, gate-DNS answers, loopback TCP/443 listeners, and the newest Antigravity agent log for location/eligibility/proxy errors.
+`Status` verifies the upstream egress, Google/CloudCode TLS path, local eligibility patch state, NRPT rules, gate-DNS answers, loopback TCP/443 listeners, live language-server sockets, injector logs, and the newest Antigravity agent log for location/eligibility/proxy errors. You can also double-click `Status.cmd`.
 
 For the full failure-layer model, see `docs/LAYER_MODEL.md`.
 
@@ -105,7 +109,7 @@ For the full failure-layer model, see `docs/LAYER_MODEL.md`.
 Setup creates two per-user scheduled tasks:
 
 - **AG RouteGuard Bridge** — starts the local bridge at logon;
-- **AG RouteGuard Watchdog** — every 5 minutes verifies that the bridge is alive and that Antigravity still has RouteGuard's network hook, generated config, and known eligibility signatures. If an Antigravity update replaces them, the watchdog re-applies known signatures for the next Antigravity launch. Unknown signatures are not guessed.
+- **AG RouteGuard Watchdog** — every 5 minutes verifies that the bridge is alive and that Antigravity still has RouteGuard's network hook, generated config, and known eligibility signatures. If Antigravity is currently running, repair is deferred rather than killing its language server. When Antigravity is closed, the pending repair is applied. The same watchdog performs a lightweight update check roughly every 12 hours and safely stages/applies the verified rolling release only while Antigravity is closed. Unknown signatures are not guessed.
 
 ## Security choices
 
@@ -126,3 +130,17 @@ The per-process network hook is built from `yuaotian/antigravity-proxy` at pinne
 ```
 
 See `THIRD_PARTY_NOTICES.md`.
+
+
+## Быстрый старт по-русски
+
+1. Полностью закрой Antigravity.
+2. Распакуй `AGRouteGuard-win-x64.zip`.
+3. Запусти `Install.cmd`.
+4. Введи адрес, порт, логин и пароль своего **статического SOCKS5**.
+5. Установщик три раза проверит один и тот же выходной IP и отдельно проверит TLS до OAuth + двух CloudCode endpoint'ов.
+6. После установки запусти Antigravity, отправь реальный запрос модели и затем открой `Status.cmd`.
+
+Если Antigravity обновился во время работы, RouteGuard не будет убивать активную задачу ради перепатча: он поставит ремонт в очередь и применит его после закрытия Antigravity.
+
+Если после зелёных проверок маршрута Google всё равно возвращает `User location is not supported for the API use`, это уже не означает утечку IP автоматически: остаётся серверная eligibility/account policy Google, которую локальный патчер физически не переписывает.
