@@ -6,9 +6,10 @@ param(
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
-$Version = '0.2.0'
+$Version = '0.3.0'
 $Repo = 'Stas5252/antigravity-routeguard'
 $Root = Join-Path $env:LOCALAPPDATA 'AGRouteGuard'
+$BackupDir = Join-Path $Root 'backups'
 $ProxyCfg = Join-Path $Root 'proxy.json'
 $Bridge = Join-Path $Root 'agbridge.exe'
 $Injector = Join-Path $Root 'version.dll'
@@ -18,9 +19,18 @@ $InstallDirFile = Join-Path $Root 'install-dir.txt'
 $BridgeTaskName = 'AG RouteGuard Bridge'
 $WatchdogTaskName = 'AG RouteGuard Watchdog'
 $RouteGuardMarker = 'AG RouteGuard - generated, local bridge only'
+$NrptComment = 'AG RouteGuard gate DNS'
+$GateDns = '127.0.0.53'
+$GateMap = @{
+  'cloudcode-pa.googleapis.com' = '127.65.71.1'
+  'daily-cloudcode-pa.googleapis.com' = '127.65.71.2'
+}
 
 function Say($m,$c='Gray'){ Write-Host $m -ForegroundColor $c }
-function Ensure-Root { New-Item -ItemType Directory -Path $Root -Force | Out-Null }
+function Ensure-Root {
+  New-Item -ItemType Directory -Path $Root -Force | Out-Null
+  New-Item -ItemType Directory -Path $BackupDir -Force | Out-Null
+}
 
 function Find-Antigravity {
   $candidates = @(
