@@ -48,7 +48,7 @@ For the gate fallback, Windows NRPT points only `cloudcode-pa.googleapis.com` an
 - injects `Antigravity.exe`, `Antigravity IDE.exe`, `language_server*`, `node.exe`, and `agy.exe`;
 - routes TCP 80/443 through one local SOCKS5 bridge;
 - blocks UDP/QUIC fallback and native IPv6 in target processes to reduce direct egress leaks;
-- supports authenticated SOCKS5 upstream proxies;
+- supports authenticated SOCKS5 upstream proxies and retries transient upstream SOCKS connection/auth failures before failing a new agent request;
 - stores the upstream password using Windows DPAPI for the current Windows user;
 - verifies the real proxy egress three times before patching and rejects rotating/changing egress;
 - verifies TLS connectivity through that same proxy to `oauth2.googleapis.com`, `cloudcode-pa.googleapis.com`, and `daily-cloudcode-pa.googleapis.com` before Setup/Repair;
@@ -100,7 +100,7 @@ RouteGuard does not need Happ/TUN for the Antigravity path. Using a second VPN l
 .\AGRouteGuard.ps1 -Action Restore
 ```
 
-`Status` verifies the upstream egress, Google/CloudCode TLS path, local eligibility patch state, NRPT rules, gate-DNS answers, loopback TCP/443 listeners, live language-server sockets, injector logs, and the newest Antigravity agent log for location/eligibility/proxy errors. You can also double-click `Status.cmd`.
+`Status` verifies the upstream egress, Google/CloudCode TLS path, local eligibility patch state, NRPT rules, gate-DNS answers, loopback TCP/443 listeners, live language-server sockets, injector logs, and the newest Antigravity agent log for location/eligibility/proxy errors. You can also double-click `Status.cmd`. `Report.cmd` writes a sanitized diagnostic report to the Desktop without copying the stored proxy password or raw conversation logs.
 
 For the full failure-layer model, see `docs/LAYER_MODEL.md`.
 
@@ -118,7 +118,7 @@ Setup creates two per-user scheduled tasks:
 - the network injector is built from a **pinned source commit** in CI rather than downloading an opaque DLL at runtime;
 - releases contain SHA-256 checksums and the built-in updater verifies them;
 - no TLS interception, certificate installation, or HTTPS decryption;
-- Restore preserves files that existed before RouteGuard installation;
+- Restore preserves files that existed before RouteGuard installation using hash-tracked managed-file metadata; if Antigravity replaced a file during an update, RouteGuard leaves the newer file untouched instead of restoring a stale backup;
 - external routing fails closed for UDP/IPv6 rather than silently falling back to a different public egress.
 
 ## Upstream
