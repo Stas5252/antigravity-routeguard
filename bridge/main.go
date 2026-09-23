@@ -311,10 +311,16 @@ func handleClient(client net.Conn, c cfg) {
     go func() {
         defer wg.Done()
         _, _ = io.Copy(upstream, r)
+        if tc, ok := upstream.(*net.TCPConn); ok {
+            _ = tc.CloseWrite()
+        }
     }()
     go func() {
         defer wg.Done()
         _, _ = io.Copy(client, upstream)
+        if tc, ok := client.(*net.TCPConn); ok {
+            _ = tc.CloseWrite()
+        }
     }()
     wg.Wait()
 }
@@ -375,12 +381,26 @@ func handleHTTPConnect(client net.Conn, r *bufio.Reader, c cfg) {
     go func() {
         defer wg.Done()
         _, _ = io.Copy(upstream, r)
+        if tc, ok := upstream.(*net.TCPConn); ok {
+            _ = tc.CloseWrite()
+        }
     }()
     go func() {
         defer wg.Done()
         _, _ = io.Copy(client, upstream)
+        if tc, ok := client.(*net.TCPConn); ok {
+            _ = tc.CloseWrite()
+        }
     }()
     wg.Wait()
+}
+
+func tuneTCP(conn net.Conn) {
+    if tc, ok := conn.(*net.TCPConn); ok {
+        _ = tc.SetKeepAlive(true)
+        _ = tc.SetKeepAlivePeriod(30 * time.Second)
+        _ = tc.SetNoDelay(true)
+    }
 }
 
 func upstreamHandshake(conn net.Conn, user, pass string) error {
@@ -503,6 +523,7 @@ func dialRawViaUpstream(c cfg, atyp byte, rawAddr []byte) (net.Conn, error) {
     if err != nil {
         return nil, err
     }
+    tuneTCP(conn)
     ok := false
     defer func() {
         if !ok {
@@ -567,6 +588,7 @@ func dialViaUpstream(c cfg, host string, port uint16) (net.Conn, error) {
     if err != nil {
         return nil, err
     }
+    tuneTCP(conn)
     ok := false
     defer func() {
         if !ok {
