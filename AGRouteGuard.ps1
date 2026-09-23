@@ -632,6 +632,9 @@ function Get-Location400Status {
       path=$log
       location400=($tail -match 'User location is not supported for the API use')
       accountIneligible=($tail -match 'not eligible|eligibility')
+      account403=($tail -match 'PERMISSION_DENIED|HTTP 403|code 403')
+      quota429=($tail -match 'RESOURCE_EXHAUSTED|HTTP 429|code 429')
+      license3501=($tail -match '#3501|valid license of this product')
       proxyBypass=($tail -match 'proxyconnect|connectex|connection refused')
     }
   } catch { return $null }
@@ -806,7 +809,10 @@ function Do-Status {
   if($loc){
     if($loc.location400){ Say "Latest agent log STILL has Google location 400: $($loc.path)" 'Red' }
     else { Say "No location 400 found in the latest log tail: $($loc.path)" 'Green' }
-    if($loc.accountIneligible){ Say 'Latest log also contains an eligibility/account-region message.' 'Yellow' }
+    if($loc.accountIneligible -and $loc.account403){ Say 'SERVER ACCOUNT GATE: 403/ineligible is present; this is account entitlement/provisioning, not just IP routing.' 'Red' }
+    elseif($loc.accountIneligible){ Say 'Latest log also contains an eligibility/account-region message.' 'Yellow' }
+    if($loc.quota429){ Say 'Quota state: 429/RESOURCE_EXHAUSTED is present.' 'Yellow' }
+    if($loc.license3501){ Say 'License state: #3501/invalid product license is present.' 'Red' }
     if($loc.proxyBypass){ Say 'Latest log contains proxy/connect errors.' 'Yellow' }
   } else {
     Say 'No Antigravity agent log found yet.' 'Yellow'
