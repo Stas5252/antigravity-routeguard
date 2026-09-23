@@ -103,6 +103,31 @@ func validateConfig(c cfg) error {
     return nil
 }
 
+func initialEgress(c cfg) (string, error) {
+    var last error
+    for attempt := 1; attempt <= 8; attempt++ {
+        ip, err := checkIP(c)
+        if err == nil {
+            return ip, nil
+        }
+        last = err
+        if attempt < 8 {
+            delay := time.Duration(attempt) * 2 * time.Second
+            log.Printf("upstream egress preflight %d/8 failed; retrying in %s: %v", attempt, delay, err)
+            time.Sleep(delay)
+        }
+    }
+    return "", last
+}
+
+func localTargetAllowed(target string) bool {
+    _, p, err := net.SplitHostPort(target)
+    if err != nil {
+        return false
+    }
+    return p == "80" || p == "443"
+}
+
 func main() {
     c := envCfg()
     if err := validateConfig(c); err != nil {
@@ -126,9 +151,9 @@ func main() {
         }
     }
 
-    initialIP, err := checkIP(c)
+    initialIP, err := initialEgress(c)
     if err != nil {
-        log.Fatalf("upstream egress preflight failed: %v", err)
+        log.Fatalf("upstream egress preflight failed after retries: %v", err)
     }
     setEgress(initialIP, true)
     log.Printf("pinned upstream egress: %s", initialIP)
@@ -320,6 +345,11 @@ func handleClient(client net.Conn, c cfg) {
         writeReply(client, 0x08)
         return
     }
+    if !localTargetAllowed(target) {
+        writeReply(client, 0x02)
+        log.Printf("blocked local SOCKS target outside 80/443: %s", target)
+        return
+    }
 
     upstream, err := dialRawViaUpstreamRetry(c, reqHead[3], rawAddr, 3)
     if err != nil {
@@ -379,6 +409,11 @@ func handleHTTPConnect(client net.Conn, r *bufio.Reader, c cfg) {
     p64, err := strconv.ParseUint(portText, 10, 16)
     if err != nil || p64 == 0 {
         _, _ = io.WriteString(client, "HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n")
+        return
+    }
+    if p64 != 80 && p64 != 443 {
+        _, _ = io.WriteString(client, "HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n")
+        log.Printf("blocked local HTTP CONNECT target outside 80/443: %s", target)
         return
     }
 
