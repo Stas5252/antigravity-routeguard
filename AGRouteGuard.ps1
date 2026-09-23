@@ -168,18 +168,32 @@ function Assert-NoKnownPatcherConflict {
   }
 
   $oldPorts=@('53129','43129','44129','45129','46129','47129','48129')
-  foreach($name in @('HTTPS_PROXY','HTTP_PROXY')){
+  foreach($name in @('HTTPS_PROXY','HTTP_PROXY','ALL_PROXY')){
     foreach($scope in @('User','Machine')){
       $v=[Environment]::GetEnvironmentVariable($name,$scope)
       if(!$v){ continue }
-      try {
-        $uri=[uri]$v
-        if($uri.Host -in @('127.0.0.1','localhost') -and ([string]$uri.Port) -in $oldPorts){
-          throw "Stale unlocker proxy detected: $name ($scope) -> $v. Disable/restore the old unlocker before RouteGuard setup."
-        }
-      } catch [System.Management.Automation.RuntimeException] {
-        throw
-      } catch {}
+      $uri=$null
+      try { $uri=[uri]$v } catch { continue }
+      if($uri.Host -in @('127.0.0.1','localhost') -and ([string]$uri.Port) -in $oldPorts){
+        throw "Stale unlocker proxy detected: $name ($scope) -> $v. Disable/restore the old unlocker before RouteGuard setup."
+      }
+    }
+  }
+
+  $hostsPath=Join-Path $env:SystemRoot 'System32\drivers\etc\hosts'
+  if(Test-Path -LiteralPath $hostsPath){
+    try {
+      $foreignHosts=@(Get-Content -LiteralPath $hostsPath -ErrorAction Stop | Where-Object {
+        $line=$_.Trim()
+        $line -and -not $line.StartsWith('#') -and
+        ($line -match '(?i)(^|\s)cloudcode-pa\.googleapis\.com(\s|$)' -or
+         $line -match '(?i)(^|\s)daily-cloudcode-pa\.googleapis\.com(\s|$)')
+      })
+      if($foreignHosts.Count -gt 0){
+        throw 'A hosts-file override exists for a CloudCode gate hostname. Restore/remove the old unlocker hosts entry before RouteGuard setup.'
+      }
+    } catch {
+      if($_.Exception.Message -match 'hosts-file override'){ throw }
     }
   }
 
@@ -1055,6 +1069,8 @@ function Test-PatchCurrent {
     if([string]$cfg._comment -ne $RouteGuardMarker){ return $false }
 
     $elig=@(Test-EligibilityPatch $dir)
+    if($elig.Count -eq 0){ return $false }
+    if(@($elig | Where-Object { $_.patched }).Count -eq 0){ return $false }
     if(@($elig | Where-Object {
       ($_.stock -and -not $_.patched) -or
       ($_.stockProxy -and -not $_.privateProxy) -or
@@ -1328,7 +1344,11 @@ function Do-Status {
     $dir=Get-InstallDir
     Say "Antigravity: $dir" 'Cyan'
     Say "version.dll installed: $([bool](Test-Path (Join-Path $dir 'version.dll')))" 'Cyan'
-    foreach($e in @(Test-EligibilityPatch $dir)){
+    $nativeEligibility=@(Test-EligibilityPatch $dir)
+    if($nativeEligibility.Count -eq 0){
+      Say 'Eligibility: no native language_server/CLI target found; this Antigravity layout is unsupported until reviewed.' 'Red'
+    }
+    foreach($e in $nativeEligibility){
       if($e.patched){ $state='patched'; $color='Green' }
       elseif($e.stock){ $state='stock/unpatched'; $color='Red' }
       else { $state='signature absent'; $color='Yellow' }
