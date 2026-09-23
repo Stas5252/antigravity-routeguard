@@ -240,6 +240,8 @@ func TestDialViaAuthenticatedUpstream(t *testing.T) {
 }
 
 func TestLocalHTTPConnectBridge(t *testing.T) {
+    setEgress("test", true)
+    defer setEgress("", false)
     c, done := startFakeAuthSOCKS(t, "alice", "secret", "example.com", 443)
     client, server := net.Pipe()
     defer client.Close()
@@ -279,6 +281,8 @@ func TestLocalHTTPConnectBridge(t *testing.T) {
 }
 
 func TestLocalSOCKSBridge(t *testing.T) {
+    setEgress("test", true)
+    defer setEgress("", false)
     c, done := startFakeAuthSOCKS(t, "alice", "secret", "example.com", 443)
     client, server := net.Pipe()
     defer client.Close()
