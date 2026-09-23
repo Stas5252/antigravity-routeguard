@@ -143,11 +143,80 @@ function Start-BridgeNow {
 
 function Check-Egress([switch]$Quiet) {
   Set-BridgeEnvironment
-  $ip = & $Bridge --check 2>&1
-  if($LASTEXITCODE -ne 0){ throw "Proxy check failed: $ip" }
-  $ip = ($ip | Out-String).Trim()
-  if(-not $Quiet){ Say "Proxy egress IP: $ip" 'Green' }
-  return $ip
+  $ips=@()
+  for($i=0; $i -lt 3; $i++){
+    $raw = & $Bridge --check 2>&1
+    if($LASTEXITCODE -ne 0){ throw "Proxy check $($i+1)/3 failed: $raw" }
+    $ip = ($raw | Out-String).Trim()
+    if([string]::IsNullOrWhiteSpace($ip)){ throw "Proxy check $($i+1)/3 returned an empty IP." }
+    $ips += $ip
+    Start-Sleep -Milliseconds 300
+  }
+  $unique=@($ips | Select-Object -Unique)
+  if($unique.Count -ne 1){ throw "Proxy egress changed during 3 checks: $($unique -join ', '). Use a sticky/static proxy." }
+  if(-not $Quiet){ Say "Proxy egress IP (3/3 stable): $($unique[0])" 'Green' }
+  return $unique[0]
+}
+
+function Get-OurNrptRules {
+  if(-not (Get-Command Get-DnsClientNrptRule -ErrorAction SilentlyContinue)){ return @() }
+  return @(Get-DnsClientNrptRule -ErrorAction SilentlyContinue | Where-Object { $_.Comment -eq $NrptComment })
+}
+
+function Ensure-GateNrpt([switch]$Quiet) {
+  if(-not (Test-IsAdmin)){
+    if(-not $Quiet){ Say 'NRPT not checked: Administrator is required.' 'Yellow' }
+    return $false
+  }
+  if(-not (Get-Command Add-DnsClientNrptRule -ErrorAction SilentlyContinue)){
+    if(-not $Quiet){ Say 'NRPT cmdlets are unavailable on this Windows build.' 'Yellow' }
+    return $false
+  }
+
+  $all=@(Get-DnsClientNrptRule -ErrorAction SilentlyContinue)
+  foreach($host in $GateMap.Keys){
+    $foreign=@($all | Where-Object {
+      ($_.Namespace -contains $host -or [string]$_.Namespace -eq $host) -and $_.Comment -ne $NrptComment
+    })
+    if($foreign.Count -gt 0){
+      throw "A foreign NRPT rule already exists for $host. RouteGuard refuses to overwrite another VPN/DNS policy."
+    }
+    $ours=@($all | Where-Object {
+      ($_.Namespace -contains $host -or [string]$_.Namespace -eq $host) -and $_.Comment -eq $NrptComment
+    })
+    if($ours.Count -eq 0){
+      Add-DnsClientNrptRule -Namespace $host -NameServers $GateDns -Comment $NrptComment | Out-Null
+      if(-not $Quiet){ Say "NRPT: $host -> DNS $GateDns" 'Green' }
+    }
+  }
+  Clear-DnsClientCache -ErrorAction SilentlyContinue
+  return $true
+}
+
+function Remove-GateNrpt {
+  if(-not (Test-IsAdmin)){ return }
+  foreach($r in @(Get-OurNrptRules)){
+    try { Remove-DnsClientNrptRule -Name $r.Name -Force -ErrorAction Stop | Out-Null } catch {}
+  }
+  Clear-DnsClientCache -ErrorAction SilentlyContinue
+}
+
+function Test-GateDns {
+  $ok=$true
+  foreach($host in $GateMap.Keys){
+    $expected=$GateMap[$host]
+    try {
+      $ans=Resolve-DnsName $host -Type A -Server $GateDns -DnsOnly -QuickTimeout -ErrorAction Stop |
+        Where-Object { $_.IPAddress } | Select-Object -First 1
+      $got=[string]$ans.IPAddress
+      if($got -ne $expected){ $ok=$false; Say "Gate DNS $host: expected $expected, got $got" 'Red' }
+      else { Say "Gate DNS $host -> $got" 'Green' }
+    } catch {
+      $ok=$false
+      Say "Gate DNS $host failed: $($_.Exception.Message)" 'Red'
+    }
+  }
+  return $ok
 }
 
 function Write-InjectorConfig($installDir) {
