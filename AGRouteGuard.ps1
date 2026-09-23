@@ -253,11 +253,36 @@ function Test-PackageManifest {
   $fail=@()
   foreach($line in @(Get-Content -LiteralPath $manifest -ErrorAction Stop)){
     if([string]::IsNullOrWhiteSpace($line)){ continue }
-    if($line -notmatch '^([0-9a-fA-F]{64})\s+\*?(.+)  Ensure-Root
+    if($line -notmatch '^([0-9a-fA-F]{64})\s+\*?(.+)$'){
+      $fail += "Malformed manifest line: $line"
+      continue
+    }
+    $expected=$matches[1].ToLowerInvariant()
+    $name=$matches[2].Trim()
+    $path=Join-Path $PSScriptRoot $name
+    if(!(Test-Path -LiteralPath $path)){
+      $fail += "Missing: $name"
+      continue
+    }
+    $actual=(Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+    if($actual -ne $expected){
+      $fail += "Hash mismatch: $name"
+    }
+  }
+
+  if($fail.Count -gt 0){
+    throw "Package integrity check failed: $($fail -join '; ')"
+  }
+  Say 'Package manifest: verified.' 'Green'
+  return $true
+}
+
+function Install-Files {
+  Ensure-Root
   $required = @('agbridge.exe','version.dll','Start-Bridge.ps1','AGRouteGuard.ps1')
   foreach($f in $required){
     $src = if($f -eq 'Start-Bridge.ps1'){ Join-Path $PSScriptRoot 'Start-Bridge.ps1' } else { Join-Path $PSScriptRoot $f }
-    if(!(Test-Path $src)){ throw "$f is missing from the release package." }
+    if(!(Test-Path -LiteralPath $src)){ throw "$f is missing from the release package." }
   }
   Copy-IfDifferentPath (Join-Path $PSScriptRoot 'agbridge.exe') $Bridge
   Copy-IfDifferentPath (Join-Path $PSScriptRoot 'version.dll') $Injector
@@ -350,28 +375,10 @@ function Get-OurNrptRules {
 }
 
 function Clear-GateDnsCache {
-  $usedTargeted=$false
   try {
-    if(-not ('RouteGuardDnsApi' -as [type])){
-      Add-Type -TypeDefinition @'
-using System;
-using System.Runtime.InteropServices;
-public static class RouteGuardDnsApi {
-    [DllImport("dnsapi.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    public static extern bool DnsFlushResolverCacheEntry_W(string hostName);
-}
-'@ -ErrorAction Stop
-    }
-    foreach($host in $GateMap.Keys){
-      try {
-        [void][RouteGuardDnsApi]::DnsFlushResolverCacheEntry_W([string]$host)
-        $usedTargeted=$true
-      } catch {}
-    }
-  } catch {}
-
-  if(-not $usedTargeted){
-    Clear-DnsClientCache -ErrorAction SilentlyContinue
+    Clear-DnsClientCache -ErrorAction Stop
+  } catch {
+    try { ipconfig /flushdns | Out-Null } catch {}
   }
 }
 
