@@ -56,21 +56,59 @@ function Ensure-AdminInteractive {
 }
 
 function Find-Antigravity {
-  $candidates = @(
-    (Join-Path $env:LOCALAPPDATA 'Programs\Antigravity\Antigravity.exe'),
-    (Join-Path $env:LOCALAPPDATA 'Programs\Antigravity IDE\Antigravity IDE.exe'),
-    (Join-Path $env:LOCALAPPDATA 'Programs\Antigravity\Antigravity IDE.exe')
-  )
-  foreach($p in $candidates){ if(Test-Path $p){ return $p } }
+  $candidates=New-Object System.Collections.Generic.List[string]
+  $pf86=[Environment]::GetEnvironmentVariable('ProgramFiles(x86)')
 
-  $base = Join-Path $env:LOCALAPPDATA 'Programs'
-  if(Test-Path $base){
-    $hit = Get-ChildItem $base -Filter 'Antigravity*.exe' -Recurse -ErrorAction SilentlyContinue |
-      Where-Object { $_.FullName -notmatch '\\uninstall|\\update' } |
+  foreach($root in @(
+    (Join-Path $env:LOCALAPPDATA 'Programs\Antigravity'),
+    (Join-Path $env:LOCALAPPDATA 'Programs\Antigravity IDE'),
+    $(if($env:ProgramFiles){Join-Path $env:ProgramFiles 'Antigravity'}),
+    $(if($env:ProgramFiles){Join-Path $env:ProgramFiles 'Antigravity IDE'}),
+    $(if($pf86){Join-Path $pf86 'Antigravity'}),
+    $(if($pf86){Join-Path $pf86 'Antigravity IDE'})
+  )){
+    if(!$root){ continue }
+    foreach($exe in @('Antigravity.exe','Antigravity IDE.exe')){
+      [void]$candidates.Add((Join-Path $root $exe))
+    }
+  }
+
+  foreach($hive in @(
+    'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*',
+    'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*',
+    'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*'
+  )){
+    try {
+      foreach($app in @(Get-ItemProperty $hive -ErrorAction SilentlyContinue | Where-Object {
+        [string]$_.DisplayName -match 'Antigravity'
+      })){
+        $loc=[string]$app.InstallLocation
+        if(!$loc){ continue }
+        foreach($exe in @('Antigravity.exe','Antigravity IDE.exe')){
+          [void]$candidates.Add((Join-Path $loc $exe))
+        }
+      }
+    } catch {}
+  }
+
+  foreach($p in @($candidates | Select-Object -Unique)){
+    if(Test-Path -LiteralPath $p){ return $p }
+  }
+
+  foreach($base in @(
+    (Join-Path $env:LOCALAPPDATA 'Programs'),
+    $env:ProgramFiles,
+    $pf86
+  )){
+    if(!$base -or !(Test-Path -LiteralPath $base)){ continue }
+    $hit=Get-ChildItem -LiteralPath $base -Filter 'Antigravity*.exe' -Recurse -Depth 4 -File -ErrorAction SilentlyContinue |
+      Where-Object { $_.FullName -notmatch '\\uninstall|\\update|\\temp' } |
+      Sort-Object LastWriteTime -Descending |
       Select-Object -First 1
     if($hit){ return $hit.FullName }
   }
-  throw 'Antigravity.exe not found. Install Antigravity first.'
+
+  throw 'Antigravity.exe not found. Install Antigravity first or place it in a standard Windows application directory.'
 }
 
 function Get-InstallDir {
