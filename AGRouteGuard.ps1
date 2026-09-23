@@ -122,6 +122,50 @@ function Show-LiveLanguageServerEgress {
   }
 }
 
+function Assert-NoKnownPatcherConflict {
+  $ours='http://127.0.0.1:17890'
+  $ag=[Environment]::GetEnvironmentVariable('AG_LS_PROXY','User')
+  if($ag -and $ag -ne $ours){
+    throw "Another Antigravity proxy channel is active (AG_LS_PROXY=$ag). Disable/restore the previous patcher first."
+  }
+
+  $oldPorts=@('53129','43129','44129','45129','46129','47129','48129')
+  foreach($name in @('HTTPS_PROXY','HTTP_PROXY')){
+    foreach($scope in @('User','Machine')){
+      $v=[Environment]::GetEnvironmentVariable($name,$scope)
+      if(!$v){ continue }
+      try {
+        $uri=[uri]$v
+        if($uri.Host -in @('127.0.0.1','localhost') -and ([string]$uri.Port) -in $oldPorts){
+          throw "Stale unlocker proxy detected: $name ($scope) -> $v. Disable/restore the old unlocker before RouteGuard setup."
+        }
+      } catch [System.Management.Automation.RuntimeException] {
+        throw
+      } catch {}
+    }
+  }
+
+  if(Get-Process -Name 'ag_dns' -ErrorAction SilentlyContinue){
+    throw 'Another Antigravity unlocker relay (ag_dns.exe) is running. Turn it off before RouteGuard setup.'
+  }
+
+  try {
+    $dir=Get-InstallDir
+    foreach($path in @(
+      (Join-Path $dir 'resources\app\out\main.js'),
+      (Join-Path $dir 'resources\app\main.js')
+    )){
+      if(!(Test-Path $path)){ continue }
+      $text=Get-Content $path -Raw -Encoding UTF8
+      if($text -match '\[AG_PROXY_HOOK\]|/\*\[AG_PATCHED\]\*/'){
+        throw "Legacy Antigravity JS/proxy patch detected in $path. Restore that patch or reinstall Antigravity cleanly before RouteGuard setup."
+      }
+    }
+  } catch {
+    if($_.Exception.Message -match 'Legacy Antigravity|Another Antigravity'){ throw }
+  }
+}
+
 function Get-ProxyPlain {
   if(!(Test-Path $ProxyCfg)){ throw 'Proxy is not configured. Run Setup/Reconfigure.' }
   $cfg = Get-Content $ProxyCfg -Raw | ConvertFrom-Json
@@ -862,6 +906,7 @@ function Do-Setup {
   Ensure-AdminInteractive
   Assert-AntigravityClosed
   Install-Files
+  Assert-NoKnownPatcherConflict
   Save-ProxyValidated
   Stop-Process -Name agbridge -Force -ErrorAction SilentlyContinue
   Start-BridgeNow
@@ -879,6 +924,7 @@ function Do-Reconfigure {
   Ensure-AdminInteractive
   Assert-AntigravityClosed
   Install-Files
+  Assert-NoKnownPatcherConflict
   Save-ProxyValidated
   Stop-Process -Name agbridge -Force -ErrorAction SilentlyContinue
   Start-BridgeNow
