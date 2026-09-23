@@ -479,22 +479,27 @@ function Get-Location400Status {
 }
 
 function Do-Setup {
+  Ensure-AdminInteractive
   Install-Files
   Save-Proxy
   Check-Egress | Out-Null
   Start-BridgeNow
+  Ensure-GateNrpt | Out-Null
+  if(-not (Test-GateDns)){ throw 'Gate DNS self-test failed. Do not launch Antigravity until Status is green.' }
   Apply-Patch
   Register-Tasks
   Say 'Setup complete. Close Antigravity completely, then open it again.' 'Green'
-  Say 'Happ/TUN is not required for this setup; keeping a second VPN layer can add instability.' 'Yellow'
+  Say 'Happ/TUN is not required for this setup. Test RouteGuard alone first.' 'Yellow'
 }
 
 function Do-Reconfigure {
+  Ensure-AdminInteractive
   Install-Files
   Save-Proxy
   Check-Egress | Out-Null
   Stop-Process -Name agbridge -Force -ErrorAction SilentlyContinue
   Start-BridgeNow
+  Ensure-GateNrpt | Out-Null
   Apply-Patch
   Register-Tasks
   Say 'Proxy changed and RouteGuard repaired.' 'Green'
@@ -504,6 +509,7 @@ function Do-Repair([switch]$Quiet) {
   if(Test-Path (Join-Path $PSScriptRoot 'agbridge.exe')){ Install-Files }
   Start-BridgeNow
   Check-Egress -Quiet | Out-Null
+  if(Test-IsAdmin){ Ensure-GateNrpt -Quiet | Out-Null }
   Apply-Patch -Quiet:$Quiet
   Register-Tasks
   if(-not $Quiet){ Say 'Repair complete. Restart Antigravity if it was already open.' 'Green' }
