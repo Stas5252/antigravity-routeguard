@@ -543,22 +543,68 @@ function Do-Status {
   } else { Say 'Proxy not configured.' 'Yellow' }
 
   try {
-    $exe=Find-Antigravity
-    $dir=Split-Path $exe -Parent
-    Say "Antigravity: $exe" 'Cyan'
+    $dir=Get-InstallDir
+    Say "Antigravity: $dir" 'Cyan'
     Say "version.dll installed: $([bool](Test-Path (Join-Path $dir 'version.dll')))" 'Cyan'
+    foreach($e in @(Test-EligibilityPatch $dir)){
+      if($e.patched){ $state='patched'; $color='Green' }
+      elseif($e.stock){ $state='stock/unpatched'; $color='Red' }
+      else { $state='signature absent'; $color='Yellow' }
+      Say "Eligibility $state : $($e.path)" $color
+    }
   } catch { Say $_.Exception.Message 'Red' }
 
-  $loc = Get-Location400Status
+  $rules=@(Get-OurNrptRules)
+  $ruleColor=if($rules.Count -ge 2){'Green'}else{'Yellow'}
+  Say "RouteGuard NRPT rules: $($rules.Count)/2" $ruleColor
+
+  if(Get-Process agbridge -ErrorAction SilentlyContinue){ Test-GateDns | Out-Null }
+
+  foreach($host in $GateMap.Keys){
+    $ip=$GateMap[$host]
+    try {
+      $tcp=Test-NetConnection $ip -Port 443 -WarningAction SilentlyContinue
+      $tcpColor=if($tcp.TcpTestSucceeded){'Green'}else{'Red'}
+      Say "Gate TCP $host via $($ip):443 = $($tcp.TcpTestSucceeded)" $tcpColor
+    } catch {}
+  }
+
+  $loc=Get-Location400Status
   if($loc){
-    if($loc.hit){ Say "Latest agent log still contains Google location 400: $($loc.path)" 'Red' }
-    else { Say "No location 400 found in the tail of latest agent log: $($loc.path)" 'Green' }
+    if($loc.location400){ Say "Latest agent log STILL has Google location 400: $($loc.path)" 'Red' }
+    else { Say "No location 400 found in the latest log tail: $($loc.path)" 'Green' }
+    if($loc.accountIneligible){ Say 'Latest log also contains an eligibility/account-region message.' 'Yellow' }
+    if($loc.proxyBypass){ Say 'Latest log contains proxy/connect errors.' 'Yellow' }
+  } else {
+    Say 'No Antigravity agent log found yet.' 'Yellow'
+  }
+
+  Say 'Server-side Google account country is not rewritten by RouteGuard; local eligibility gates and network egress are separate layers.' 'DarkYellow'
+}
+
+function Restore-EligibilityBackups {
+  if(!(Test-Path $BackupDir)){ return }
+  foreach($metaFile in @(Get-ChildItem $BackupDir -Filter '*.json' -File -ErrorAction SilentlyContinue)){
+    try {
+      $m=Get-Content $metaFile.FullName -Raw | ConvertFrom-Json
+      if(!(Test-Path $m.target) -or !(Test-Path $m.backup)){ continue }
+      $current=(Get-FileHash $m.target -Algorithm SHA256).Hash
+      if($m.patched_hash -and $current -eq $m.patched_hash){
+        Copy-Item $m.backup $m.target -Force
+        Say "Restored eligibility backup: $($m.target)" 'Green'
+      } else {
+        Say "Skipped stale backup (target changed since patch): $($m.target)" 'Yellow'
+      }
+    } catch {}
   }
 }
 
 function Do-Restore {
+  Ensure-AdminInteractive
   Stop-Process -Name agbridge -Force -ErrorAction SilentlyContinue
   Remove-Tasks
+  Remove-GateNrpt
+  Restore-EligibilityBackups
   if(Test-Path $InstallDirFile){
     $dir=(Get-Content $InstallDirFile -Raw).Trim()
     $safeLeaf = (Split-Path $dir -Leaf) -replace '[^A-Za-z0-9._-]','_'
@@ -569,7 +615,7 @@ function Do-Restore {
       elseif(Test-Path $dst){ Remove-Item $dst -Force }
     }
   }
-  Say 'Restored backups and removed RouteGuard scheduled tasks.' 'Green'
+  Say 'Restored eligibility backups, removed gate DNS rules and RouteGuard scheduled tasks.' 'Green'
 }
 
 function Parse-Checksum($text,$fileName) {
