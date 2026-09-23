@@ -1,12 +1,12 @@
 param(
-  [ValidateSet('Menu','Setup','Repair','Status','Restore','Update','Watchdog','Reconfigure')]
+  [ValidateSet('Menu','Setup','Repair','Status','Restore','Update','AutoUpdate','Watchdog','Reconfigure')]
   [string]$Action = 'Menu'
 )
 
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
-$Version = '0.3.0'
+$Version = '0.4.0'
 $Repo = 'Stas5252/antigravity-routeguard'
 $Root = Join-Path $env:LOCALAPPDATA 'AGRouteGuard'
 $BackupDir = Join-Path $Root 'backups'
@@ -16,6 +16,10 @@ $Injector = Join-Path $Root 'version.dll'
 $StartBridge = Join-Path $Root 'Start-Bridge.ps1'
 $InstalledScript = Join-Path $Root 'AGRouteGuard.ps1'
 $InstallDirFile = Join-Path $Root 'install-dir.txt'
+$InstalledReleaseHash = Join-Path $Root 'installed-release.sha256'
+$LastUpdateCheck = Join-Path $Root 'last-update-check.txt'
+$PendingUpdate = Join-Path $Root 'pending-update.txt'
+$PendingRepair = Join-Path $Root 'pending-repair.txt'
 $BridgeTaskName = 'AG RouteGuard Bridge'
 $WatchdogTaskName = 'AG RouteGuard Watchdog'
 $RouteGuardMarker = 'AG RouteGuard - generated, local bridge only'
@@ -177,13 +181,22 @@ function Set-BridgeEnvironment {
   $env:AG_LOCAL_ADDR=[string]$p.local_addr
 }
 
+function Get-BridgeProcess {
+  try {
+    return @(Get-CimInstance Win32_Process -Filter "Name='agbridge.exe'" -ErrorAction SilentlyContinue |
+      Where-Object { $_.ExecutablePath -eq $Bridge })
+  } catch {
+    return @(Get-Process agbridge -ErrorAction SilentlyContinue)
+  }
+}
+
 function Start-BridgeNow {
   if(!(Test-Path $ProxyCfg)){ throw 'Proxy is not configured. Run Setup.' }
   if(!(Test-Path $Bridge)){ throw 'agbridge.exe is missing. Run Setup/Repair from a release package.' }
-  if(Get-Process agbridge -ErrorAction SilentlyContinue){ return }
+  if(@(Get-BridgeProcess).Count -gt 0){ return }
   & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $StartBridge
-  Start-Sleep -Milliseconds 800
-  if(-not (Get-Process agbridge -ErrorAction SilentlyContinue)){ throw 'Bridge did not start.' }
+  Start-Sleep -Milliseconds 900
+  if(@(Get-BridgeProcess).Count -eq 0){ throw 'RouteGuard bridge did not start. Check bridge.log.' }
 }
 
 function Check-Egress([switch]$Quiet) {
@@ -201,6 +214,32 @@ function Check-Egress([switch]$Quiet) {
   if($unique.Count -ne 1){ throw "Proxy egress changed during 3 checks: $($unique -join ', '). Use a sticky/static proxy." }
   if(-not $Quiet){ Say "Proxy egress IP (3/3 stable): $($unique[0])" 'Green' }
   return $unique[0]
+}
+
+function Check-GooglePath([switch]$Quiet) {
+  Set-BridgeEnvironment
+  $out = & $Bridge --probe-google 2>&1
+  if($LASTEXITCODE -ne 0){
+    throw "Google/CloudCode TLS probe through the proxy failed: $($out | Out-String)"
+  }
+  if(-not $Quiet){
+    foreach($line in @($out)){ if($line){ Say "Google path: $line" 'Green' } }
+  }
+  return $true
+}
+
+function Save-ProxyValidated {
+  $oldExists = Test-Path $ProxyCfg
+  $old = if($oldExists){ Get-Content $ProxyCfg -Raw } else { $null }
+  try {
+    Save-Proxy
+    Check-Egress | Out-Null
+    Check-GooglePath | Out-Null
+  } catch {
+    if($oldExists){ Set-Content $ProxyCfg $old -Encoding UTF8 }
+    else { Remove-Item $ProxyCfg -Force -ErrorAction SilentlyContinue }
+    throw
+  }
 }
 
 function Get-OurNrptRules {
@@ -598,7 +637,9 @@ function Register-Tasks {
   schtasks.exe /Create /TN $BridgeTaskName /SC ONLOGON /TR $bridgeCmd /F | Out-Null
 
   $watchdogCmd = "powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$InstalledScript`" -Action Watchdog"
-  schtasks.exe /Create /TN $WatchdogTaskName /SC MINUTE /MO 5 /TR $watchdogCmd /F | Out-Null
+  $args=@('/Create','/TN',$WatchdogTaskName,'/SC','MINUTE','/MO','5','/TR',$watchdogCmd,'/F')
+  if(Test-IsAdmin){ $args += @('/RL','HIGHEST') }
+  & schtasks.exe @args | Out-Null
 }
 
 function Remove-Tasks {
@@ -644,14 +685,14 @@ function Do-Setup {
   Ensure-AdminInteractive
   Assert-AntigravityClosed
   Install-Files
-  Save-Proxy
-  Check-Egress | Out-Null
+  Save-ProxyValidated
   Start-BridgeNow
   Ensure-GateNrpt | Out-Null
   if(-not (Test-GateDns)){ throw 'Gate DNS self-test failed. Do not launch Antigravity until Status is green.' }
   Apply-Patch
+  Remove-Item $PendingRepair,$PendingUpdate -Force -ErrorAction SilentlyContinue
   Register-Tasks
-  Say 'Setup complete. Close Antigravity completely, then open it again.' 'Green'
+  Say 'Setup complete. Launch Antigravity and run Status after the first model request.' 'Green'
   Say 'Happ/TUN is not required for this setup. Test RouteGuard alone first.' 'Yellow'
 }
 
@@ -659,28 +700,40 @@ function Do-Reconfigure {
   Ensure-AdminInteractive
   Assert-AntigravityClosed
   Install-Files
-  Save-Proxy
-  Check-Egress | Out-Null
+  Save-ProxyValidated
   Stop-Process -Name agbridge -Force -ErrorAction SilentlyContinue
   Start-BridgeNow
   Ensure-GateNrpt | Out-Null
+  if(-not (Test-GateDns)){ throw 'Gate DNS self-test failed after proxy change.' }
   Apply-Patch
+  Remove-Item $PendingRepair -Force -ErrorAction SilentlyContinue
   Register-Tasks
-  Say 'Proxy changed and RouteGuard repaired.' 'Green'
+  Say 'Proxy changed, validated against Google/CloudCode, and RouteGuard repaired.' 'Green'
 }
 
 function Do-Repair([switch]$Quiet) {
   if(@(Get-AntigravityProcesses).Count -gt 0){
-    if(-not $Quiet){ Say 'Repair deferred: close Antigravity, then run Repair again.' 'Yellow' }
+    Set-Content $PendingRepair (Get-Date -Format o) -Encoding ASCII
+    if(-not $Quiet){ Say 'Repair deferred safely: close Antigravity; watchdog will repair it automatically.' 'Yellow' }
     return
   }
   if(Test-Path (Join-Path $PSScriptRoot 'agbridge.exe')){ Install-Files }
   Start-BridgeNow
   Check-Egress -Quiet | Out-Null
+  Check-GooglePath -Quiet | Out-Null
   if(Test-IsAdmin){ Ensure-GateNrpt -Quiet | Out-Null }
   Apply-Patch -Quiet:$Quiet
+  Remove-Item $PendingRepair -Force -ErrorAction SilentlyContinue
   Register-Tasks
-  if(-not $Quiet){ Say 'Repair complete. Restart Antigravity if it was already open.' 'Green' }
+  if(-not $Quiet){ Say 'Repair complete.' 'Green' }
+}
+
+function Test-UpdateCheckDue {
+  if(!(Test-Path $LastUpdateCheck)){ return $true }
+  try {
+    $last=[datetime]::Parse((Get-Content $LastUpdateCheck -Raw).Trim())
+    return ((Get-Date) - $last).TotalHours -ge 12
+  } catch { return $true }
 }
 
 function Do-Watchdog {
@@ -688,7 +741,25 @@ function Do-Watchdog {
     Ensure-Root
     if(!(Test-Path $ProxyCfg) -or !(Test-Path $Bridge) -or !(Test-Path $Injector)){ return }
     Start-BridgeNow
-    if(-not (Test-PatchCurrent)){ Apply-Patch -Quiet }
+
+    $running=@(Get-AntigravityProcesses).Count -gt 0
+    if(-not (Test-PatchCurrent)){
+      if($running){
+        Set-Content $PendingRepair (Get-Date -Format o) -Encoding ASCII
+      } else {
+        Apply-Patch -Quiet
+        Remove-Item $PendingRepair -Force -ErrorAction SilentlyContinue
+      }
+    } elseif((Test-Path $PendingRepair) -and -not $running) {
+      Apply-Patch -Quiet
+      Remove-Item $PendingRepair -Force -ErrorAction SilentlyContinue
+    }
+
+    if((Test-Path $PendingUpdate) -and -not $running){
+      Do-Update -Automatic
+    } elseif((Test-UpdateCheckDue) -and -not $running) {
+      Do-Update -Automatic
+    }
   } catch {
     $log = Join-Path $Root 'watchdog.log'
     "$(Get-Date -Format o) $($_.Exception.Message)" | Add-Content $log -Encoding UTF8
@@ -790,14 +861,19 @@ function Show-CompetingProxySettings {
 
 function Do-Status {
   Say "AG RouteGuard v$Version" 'Magenta'
-  Say "Bridge process: $([bool](Get-Process agbridge -ErrorAction SilentlyContinue))" 'Cyan'
+  Say "Bridge process: $(@(Get-BridgeProcess).Count -gt 0)" 'Cyan'
+  if(Test-Path $PendingRepair){ Say 'Pending repair: YES (will apply when Antigravity is closed).' 'Yellow' }
+  if(Test-Path $PendingUpdate){ Say 'Pending RouteGuard update: YES (will apply when Antigravity is closed).' 'Yellow' }
   Say "Patch current: $(Test-PatchCurrent)" 'Cyan'
   Show-CompetingProxySettings
   Show-LiveLanguageServerEgress
   Show-InjectorDiagnostics
   Show-BridgeDiagnostics
   if(Test-Path $ProxyCfg){
-    try { Check-Egress | Out-Null } catch { Say $_.Exception.Message 'Red' }
+    try {
+      Check-Egress | Out-Null
+      Check-GooglePath | Out-Null
+    } catch { Say $_.Exception.Message 'Red' }
   } else { Say 'Proxy not configured.' 'Yellow' }
 
   try {
@@ -862,6 +938,7 @@ function Restore-EligibilityBackups {
 
 function Do-Restore {
   Ensure-AdminInteractive
+  Assert-AntigravityClosed
   Stop-Process -Name agbridge -Force -ErrorAction SilentlyContinue
   Remove-Tasks
   Remove-GateNrpt
@@ -877,6 +954,7 @@ function Do-Restore {
       elseif(Test-Path $dst){ Remove-Item $dst -Force }
     }
   }
+  Remove-Item $PendingRepair,$PendingUpdate,$LastUpdateCheck -Force -ErrorAction SilentlyContinue
   Say 'Restored eligibility backups, removed gate DNS rules and RouteGuard scheduled tasks.' 'Green'
 }
 
@@ -889,15 +967,28 @@ function Parse-Checksum($text,$fileName) {
   return $null
 }
 
-function Do-Update {
+function Do-Update([switch]$Automatic) {
+  Ensure-Root
+  if(@(Get-AntigravityProcesses).Count -gt 0){
+    Set-Content $PendingUpdate (Get-Date -Format o) -Encoding ASCII
+    if(-not $Automatic){ Say 'Update deferred safely: close Antigravity; watchdog will apply it automatically.' 'Yellow' }
+    return
+  }
+
   $api="https://api.github.com/repos/$Repo/releases/latest"
   try { $rel=Invoke-RestMethod $api -Headers @{ 'User-Agent'="AGRouteGuard/$Version" } }
-  catch { throw "Update check failed: $($_.Exception.Message)" }
+  catch {
+    if($Automatic){ Set-Content $LastUpdateCheck (Get-Date -Format o) -Encoding ASCII; return }
+    throw "Update check failed: $($_.Exception.Message)"
+  }
+  Set-Content $LastUpdateCheck (Get-Date -Format o) -Encoding ASCII
 
-  Say "Installed: v$Version  Latest: $($rel.tag_name)" 'Cyan'
   $zipAsset = $rel.assets | Where-Object { $_.name -eq 'AGRouteGuard-win-x64.zip' } | Select-Object -First 1
   $sumAsset = $rel.assets | Where-Object { $_.name -eq 'SHA256SUMS.txt' } | Select-Object -First 1
-  if(!$zipAsset -or !$sumAsset){ throw 'Latest release is missing package/checksum assets.' }
+  if(!$zipAsset -or !$sumAsset){
+    if($Automatic){ return }
+    throw 'Latest release is missing package/checksum assets.'
+  }
 
   $temp = Join-Path $env:TEMP ("AGRouteGuard-update-" + [guid]::NewGuid().ToString('N'))
   New-Item -ItemType Directory -Path $temp -Force | Out-Null
@@ -911,16 +1002,36 @@ function Do-Update {
     $actual = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant()
     if($actual -ne $expected){ throw "SHA-256 mismatch. expected=$expected actual=$actual" }
 
+    if(Test-Path $InstalledReleaseHash){
+      $installed=(Get-Content $InstalledReleaseHash -Raw).Trim().ToLowerInvariant()
+      if($installed -eq $actual){
+        Remove-Item $PendingUpdate -Force -ErrorAction SilentlyContinue
+        if(-not $Automatic){ Say 'RouteGuard is already on the latest rolling release.' 'Green' }
+        return
+      }
+    }
+
     $unpack = Join-Path $temp 'unpack'
     Expand-Archive $zip $unpack -Force
-    foreach($f in @('AGRouteGuard.ps1','agbridge.exe','version.dll','Start-Bridge.ps1')){
-      $src = Join-Path $unpack $f
-      if(!(Test-Path $src)){ throw "Release package missing $f" }
-      Copy-Item $src (Join-Path $Root $f) -Force
+    foreach($name in @('AGRouteGuard.ps1','agbridge.exe','version.dll','Start-Bridge.ps1')){
+      if(!(Test-Path (Join-Path $unpack $name))){ throw "Release package missing $name" }
     }
+
     Stop-Process -Name agbridge -Force -ErrorAction SilentlyContinue
+    foreach($name in @('AGRouteGuard.ps1','agbridge.exe','version.dll','Start-Bridge.ps1')){
+      Copy-Item (Join-Path $unpack $name) (Join-Path $Root $name) -Force
+    }
+    Set-Content $InstalledReleaseHash $actual -Encoding ASCII
+    Remove-Item $PendingUpdate -Force -ErrorAction SilentlyContinue
+
     & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $InstalledScript -Action Repair
-    Say 'RouteGuard updated and repaired.' 'Green'
+    if(-not $Automatic){ Say 'RouteGuard updated, checksum verified, and repaired.' 'Green' }
+  } catch {
+    if($Automatic){
+      "$(Get-Date -Format o) auto-update: $($_.Exception.Message)" | Add-Content (Join-Path $Root 'watchdog.log') -Encoding UTF8
+      return
+    }
+    throw
   } finally {
     Remove-Item $temp -Recurse -Force -ErrorAction SilentlyContinue
   }
@@ -947,6 +1058,7 @@ switch($Action){
   'Status'{Do-Status}
   'Restore'{Do-Restore}
   'Update'{Do-Update}
+  'AutoUpdate'{Do-Update -Automatic}
   'Watchdog'{Do-Watchdog}
   'Reconfigure'{Do-Reconfigure}
   default{Menu}
