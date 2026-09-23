@@ -1,0 +1,6 @@
+dist/
+*.exe
+*.dll
+*.zip
+SHA256SUMS.txt
+proxy.json
