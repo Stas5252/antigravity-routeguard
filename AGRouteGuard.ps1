@@ -10,6 +10,7 @@ $Version = '0.4.0'
 $Repo = 'Stas5252/antigravity-routeguard'
 $Root = Join-Path $env:LOCALAPPDATA 'AGRouteGuard'
 $BackupDir = Join-Path $Root 'backups'
+$ManagedDir = Join-Path $Root 'managed'
 $ProxyCfg = Join-Path $Root 'proxy.json'
 $Bridge = Join-Path $Root 'agbridge.exe'
 $Injector = Join-Path $Root 'version.dll'
@@ -34,6 +35,7 @@ function Say($m,$c='Gray'){ Write-Host $m -ForegroundColor $c }
 function Ensure-Root {
   New-Item -ItemType Directory -Path $Root -Force | Out-Null
   New-Item -ItemType Directory -Path $BackupDir -Force | Out-Null
+  New-Item -ItemType Directory -Path $ManagedDir -Force | Out-Null
 }
 
 function Test-IsAdmin {
@@ -351,6 +353,96 @@ function Get-PathKey($path) {
   } finally { $sha.Dispose() }
 }
 
+function Install-ManagedFile($source,$target,$kind) {
+  Ensure-Root
+  if(!(Test-Path -LiteralPath $source)){ throw "Managed source missing: $source" }
+
+  $key=Get-PathKey $target
+  $metaPath=Join-Path $ManagedDir "$key.json"
+  $bakPath=Join-Path $ManagedDir "$key.original"
+  $meta=$null
+  if(Test-Path $metaPath){
+    try { $meta=Get-Content $metaPath -Raw | ConvertFrom-Json } catch { $meta=$null }
+  }
+
+  $currentExists=Test-Path -LiteralPath $target
+  $currentHash=if($currentExists){(Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash}else{''}
+  $refreshOriginal=$true
+
+  if($meta -and $meta.installed_hash -and $currentExists -and $currentHash -eq [string]$meta.installed_hash){
+    # Still our previous payload: preserve the original backup across repairs.
+    $refreshOriginal=$false
+  }
+
+  if($refreshOriginal){
+    if($currentExists){
+      Copy-Item -LiteralPath $target -Destination $bakPath -Force
+      $originalExists=$true
+      $originalHash=$currentHash
+    } else {
+      Remove-Item -LiteralPath $bakPath -Force -ErrorAction SilentlyContinue
+      $originalExists=$false
+      $originalHash=''
+    }
+  } else {
+    $originalExists=[bool]$meta.original_exists
+    $originalHash=[string]$meta.original_hash
+  }
+
+  $targetDir=Split-Path $target -Parent
+  New-Item -ItemType Directory -Path $targetDir -Force | Out-Null
+  $tmp=Join-Path $targetDir ('.routeguard-' + [IO.Path]::GetFileName($target) + "-$PID.tmp")
+  try {
+    Copy-Item -LiteralPath $source -Destination $tmp -Force
+    Move-Item -LiteralPath $tmp -Destination $target -Force
+  } finally {
+    Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+  }
+
+  $installedHash=(Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash
+  [pscustomobject]@{
+    target=[IO.Path]::GetFullPath($target)
+    kind=$kind
+    original_exists=$originalExists
+    original_hash=$originalHash
+    original_backup=$bakPath
+    installed_hash=$installedHash
+    updated_utc=[DateTime]::UtcNow.ToString('o')
+  } | ConvertTo-Json | Set-Content $metaPath -Encoding UTF8
+}
+
+function Restore-ManagedFiles {
+  Ensure-Root
+  $processed=0
+  foreach($metaFile in @(Get-ChildItem $ManagedDir -Filter '*.json' -File -ErrorAction SilentlyContinue)){
+    $processed++
+    try {
+      $m=Get-Content $metaFile.FullName -Raw | ConvertFrom-Json
+      $target=[string]$m.target
+      $currentExists=Test-Path -LiteralPath $target
+      $currentHash=if($currentExists){(Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash}else{''}
+
+      if($currentExists -and $m.installed_hash -and $currentHash -eq [string]$m.installed_hash){
+        if([bool]$m.original_exists -and (Test-Path -LiteralPath ([string]$m.original_backup))){
+          Copy-Item -LiteralPath ([string]$m.original_backup) -Destination $target -Force
+          Say "Restored original managed file: $target" 'Green'
+        } elseif(-not [bool]$m.original_exists) {
+          Remove-Item -LiteralPath $target -Force -ErrorAction SilentlyContinue
+          Say "Removed RouteGuard-created file: $target" 'Green'
+        }
+      } elseif($currentExists) {
+        Say "Managed target changed since RouteGuard installed it; leaving newer/foreign file untouched: $target" 'Yellow'
+      }
+
+      Remove-Item -LiteralPath ([string]$m.original_backup) -Force -ErrorAction SilentlyContinue
+      Remove-Item -LiteralPath $metaFile.FullName -Force -ErrorAction SilentlyContinue
+    } catch {
+      Say "Managed-file restore warning: $($_.Exception.Message)" 'Yellow'
+    }
+  }
+  return $processed
+}
+
 function Save-PatchBackup($path,$kind) {
   Ensure-Root
   $key=Get-PathKey $path
@@ -604,11 +696,17 @@ function Test-EligibilityPatch($installDir) {
 function Apply-Patch([switch]$Quiet) {
   if(!(Test-Path $Injector)){ throw 'version.dll payload missing. Run Setup/Repair from the release package.' }
   $dir=Get-InstallDir
-  Backup-IfNeeded $dir 'version.dll'
-  Backup-IfNeeded $dir 'config.json'
 
-  Copy-Item $Injector (Join-Path $dir 'version.dll') -Force
-  Write-InjectorConfig $dir
+  $stage=Join-Path $Root ("stage-" + [guid]::NewGuid().ToString('N'))
+  New-Item -ItemType Directory -Path $stage -Force | Out-Null
+  try {
+    Write-InjectorConfig $stage
+    Install-ManagedFile $Injector (Join-Path $dir 'version.dll') 'injector-dll'
+    Install-ManagedFile (Join-Path $stage 'config.json') (Join-Path $dir 'config.json') 'injector-config'
+  } finally {
+    Remove-Item $stage -Recurse -Force -ErrorAction SilentlyContinue
+  }
+
   Apply-EligibilityPatches $dir -Quiet:$Quiet | Out-Null
   Ensure-PrivateProxyEnv
   Set-Content $InstallDirFile $dir -Encoding UTF8
@@ -948,7 +1046,10 @@ function Do-Restore {
   Remove-GateNrpt
   Remove-PrivateProxyEnv
   Restore-EligibilityBackups
-  if(Test-Path $InstallDirFile){
+  $managedProcessed=Restore-ManagedFiles
+
+  # Compatibility with pre-0.4 installs which used simple one-off backups.
+  if($managedProcessed -eq 0 -and (Test-Path $InstallDirFile)){
     $dir=(Get-Content $InstallDirFile -Raw).Trim()
     $safeLeaf = (Split-Path $dir -Leaf) -replace '[^A-Za-z0-9._-]','_'
     foreach($name in @('version.dll','config.json')){
