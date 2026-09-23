@@ -345,3 +345,36 @@ func TestFakeProxyPortIsNumeric(t *testing.T) {
     _ = conn.Close()
     waitFakeSOCKS(t, done)
 }
+
+
+func TestValidateConfigLoopback(t *testing.T) {
+    good := cfg{
+        UpstreamHost: "203.0.113.10",
+        UpstreamPort: "1080",
+        Username:     "u",
+        Password:     "p",
+        Listen:       "127.0.0.1:17890",
+    }
+    if err := validateConfig(good); err != nil {
+        t.Fatalf("valid config rejected: %v", err)
+    }
+
+    badListen := good
+    badListen.Listen = "0.0.0.0:17890"
+    if err := validateConfig(badListen); err == nil {
+        t.Fatal("non-loopback local listener must be rejected")
+    }
+
+    selfLoop := good
+    selfLoop.UpstreamHost = "127.0.0.1"
+    selfLoop.UpstreamPort = "17890"
+    if err := validateConfig(selfLoop); err == nil {
+        t.Fatal("upstream self-loop must be rejected")
+    }
+
+    badPort := good
+    badPort.UpstreamPort = "70000"
+    if err := validateConfig(badPort); err == nil {
+        t.Fatal("invalid upstream port must be rejected")
+    }
+}
