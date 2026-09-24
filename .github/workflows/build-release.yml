@@ -66,6 +66,7 @@ jobs:
       - name: Package
         shell: pwsh
         run: |
+          Set-Content dist/BUILD_COMMIT.txt $env:GITHUB_SHA -Encoding ascii
           Copy-Item AGRouteGuard.ps1 dist/AGRouteGuard.ps1
           Copy-Item scripts/Start-Bridge.ps1 dist/Start-Bridge.ps1
           Copy-Item Install.cmd dist/Install.cmd
