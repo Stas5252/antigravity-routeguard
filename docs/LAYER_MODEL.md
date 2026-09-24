@@ -6,7 +6,7 @@ This document records the failure layers RouteGuard is designed around. The impo
 
 Known IDE builds include a local branch around `isGoogleInternal`. Open AG Patcher handles this by changing the branch input after `resetIsTierGCPTos()` to `true`.
 
-RouteGuard 0.5 mirrors the same idea with a narrow regex against the known Antigravity `main.js` pattern and backs up the file before changing it.
+RouteGuard 0.6 mirrors the same idea with a narrow regex against the known Antigravity `main.js` pattern and backs up the file before changing it.
 
 Purpose: remove a **client-side** sign-in/region gate.
 
