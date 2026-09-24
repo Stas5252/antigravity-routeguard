@@ -1,6 +1,6 @@
 # AG RouteGuard
 
-AG RouteGuard is a Windows-only Antigravity compatibility/unlock layer. Current release line: **0.4.1**. It handles **local eligibility checks, CloudCode gate routing, authenticated SOCKS5 egress, leak prevention, diagnostics, rollback, and auto-repair after Antigravity updates.**
+AG RouteGuard is a Windows-only Antigravity compatibility/unlock layer. Current release line: **0.5.0**. It handles **local eligibility checks, CloudCode gate routing, authenticated SOCKS5 egress, leak prevention, diagnostics, rollback, and auto-repair after Antigravity updates.**
 
 ## Why this exists
 
