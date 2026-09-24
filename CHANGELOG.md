@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.6.0 — 2026-09-24
+
+### Multi-account integration
+- Added `Accounts.cmd` / `AccountSwap.ps1` for one-click switching through Antigravity Tools' official localhost account API.
+- Auto-discovers the default/custom Antigravity Tools HTTP API port and verifies the selected account through `/accounts/current` after the switch.
+- Does not read or copy refresh tokens; account credential handling remains inside Antigravity Tools.
+- Warns before switching while Antigravity is running because the Tools switch flow can restart the IDE and interrupt an active agent task.
+- Verifies that the RouteGuard bridge is alive before and after the switch.
+- Documents the recommended two-account network path: Antigravity Tools Proxy Pool OFF, Global Upstream Proxy -> `socks5h://127.0.0.1:17890`, so OAuth/token refresh uses the same RouteGuard egress.
+
 ## 0.5.0 — 2026-09-24
 
 ### Reliability
