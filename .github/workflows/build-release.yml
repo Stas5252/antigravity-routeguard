@@ -38,6 +38,14 @@ jobs:
             [void][scriptblock]::Create((Get-Content $_.FullName -Raw))
           }
 
+      - name: Test release metadata consistency on PowerShell 7
+        shell: pwsh
+        run: ./tests/version-consistency.ps1
+
+      - name: Test release metadata consistency on Windows PowerShell 5.1
+        shell: powershell
+        run: .\tests\version-consistency.ps1
+
       - name: Test eligibility signatures on PowerShell 7
         shell: pwsh
         run: ./tests/eligibility-signatures.ps1
