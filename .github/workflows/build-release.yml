@@ -83,6 +83,8 @@ jobs:
           Copy-Item Report.cmd dist/Report.cmd
           Copy-Item Launch.cmd dist/Launch.cmd
           Copy-Item LaunchProduction.cmd dist/LaunchProduction.cmd
+          Copy-Item Accounts.cmd dist/Accounts.cmd
+          Copy-Item AccountSwap.ps1 dist/AccountSwap.ps1
           Copy-Item README.md dist/README.md
           Copy-Item CHANGELOG.md dist/CHANGELOG.md
           Copy-Item THIRD_PARTY_NOTICES.md dist/THIRD_PARTY_NOTICES.md
