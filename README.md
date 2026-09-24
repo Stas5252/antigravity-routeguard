@@ -1,6 +1,6 @@
 # AG RouteGuard
 
-AG RouteGuard is a Windows-only Antigravity compatibility/unlock layer. Current release line: **0.5.0**. It handles **local eligibility checks, CloudCode gate routing, authenticated SOCKS5 egress, leak prevention, diagnostics, rollback, and auto-repair after Antigravity updates.**
+AG RouteGuard is a Windows-only Antigravity compatibility/unlock layer. Current release line: **0.6.0**. It handles **local eligibility checks, CloudCode gate routing, authenticated SOCKS5 egress, leak prevention, diagnostics, rollback, and auto-repair after Antigravity updates.**
 
 ## Why this exists
 
@@ -61,7 +61,8 @@ For the gate fallback, Windows NRPT points only `cloudcode-pa.googleapis.com` an
 - checks the rolling RouteGuard release periodically, verifies `SHA256SUMS.txt`, and auto-updates only while Antigravity is closed; otherwise the update is deferred safely;
 - can self-update from GitHub Releases, verifies the outer ZIP with `SHA256SUMS.txt`, then verifies every packaged file against the inner `MANIFEST.sha256` before replacing installed files;
 - stamps each release with its immutable Git commit so the updater can tell exactly which rolling build is installed;
-- keeps `Launch.cmd`, `Status.cmd`, `Report.cmd`, `Restore.cmd` and the other helpers in the persistent `%LOCALAPPDATA%\AGRouteGuard` install so auto-update updates the tools the user actually runs;
+- keeps `Launch.cmd`, `Accounts.cmd`, `Status.cmd`, `Report.cmd`, `Restore.cmd` and the other helpers in the persistent `%LOCALAPPDATA%\AGRouteGuard` install so auto-update updates the tools the user actually runs;
+- integrates with Antigravity Tools' localhost account API for verified multi-account switching without reading or copying refresh tokens;
 - validates the effective managed network policy on every watchdog/status pass and shows whether the newest Antigravity `ls-main.log` still contains the Google location-400 error;
 - GitHub Actions builds the Windows x64 package from source and publishes SHA-256 checksums.
 
@@ -92,6 +93,22 @@ Enter your SOCKS5 host/IP, port, username, and password when prompted. The passw
 
 RouteGuard does not need Happ/TUN for the Antigravity path. Using a second VPN layer at the same time can add latency and another failure point, so test RouteGuard by itself first.
 
+### Two-account / Antigravity Tools setup
+
+RouteGuard 0.6 can use Antigravity Tools' local HTTP account API (default `127.0.0.1:19527`) to switch between accounts. Double-click `Accounts.cmd` or run `AGRouteGuard.ps1 -Action Accounts`.
+
+Recommended Antigravity Tools network setup when using this feature:
+
+```text
+Proxy Pool: OFF
+Global Upstream Proxy: ON
+URL: socks5h://127.0.0.1:17890
+```
+
+That makes Antigravity Tools' own OAuth/token-refresh requests leave through the same authenticated RouteGuard egress instead of creating a second independent public route. The external proxy credentials remain only inside RouteGuard. Account switching can restart Antigravity, so do not switch in the middle of an agent task you need to preserve.
+
+The account helper discovers a custom Antigravity Tools HTTP API port from its settings when available, lists the accounts, submits the official `/accounts/switch` request, and waits until `/accounts/current` confirms the requested account. It never reads account refresh tokens.
+
 ## Commands
 
 ```powershell
@@ -99,6 +116,7 @@ RouteGuard does not need Happ/TUN for the Antigravity path. Using a second VPN l
 .\AGRouteGuard.ps1 -Action Repair
 .\AGRouteGuard.ps1 -Action Reconfigure
 .\AGRouteGuard.ps1 -Action Update
+.\AGRouteGuard.ps1 -Action Accounts
 .\AGRouteGuard.ps1 -Action Restore
 ```
 
@@ -142,7 +160,8 @@ See `THIRD_PARTY_NOTICES.md`.
 4. Введи адрес, порт, логин и пароль своего **статического SOCKS5**.
 5. Установщик три раза проверит один и тот же выходной IP и отдельно проверит TLS до OAuth + двух CloudCode endpoint'ов.
 6. Для первого запуска используй **`Launch.cmd`** — так `AG_LS_PROXY` гарантированно попадёт в новый процесс Antigravity и его language server.
-7. Отправь реальный запрос модели и затем открой `Status.cmd`.
+7. Если используешь 2 аккаунта в Antigravity Tools, включи там `Global Upstream Proxy = socks5h://127.0.0.1:17890`, оставь `Proxy Pool` выключенным и переключай аккаунты через **`Accounts.cmd`**.
+8. Отправь реальный запрос модели и затем открой `Status.cmd`.
 
 Если Antigravity обновился во время работы, RouteGuard не будет убивать активную задачу ради перепатча: он поставит ремонт в очередь и применит его после закрытия Antigravity.
 
