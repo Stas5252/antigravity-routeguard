@@ -1,12 +1,12 @@
 param(
-  [ValidateSet('Menu','Setup','Repair','Status','Report','Launch','LaunchProduction','Restore','Update','AutoUpdate','Watchdog','Reconfigure')]
+  [ValidateSet('Menu','Setup','Repair','Status','Report','Launch','LaunchProduction','Accounts','Restore','Update','AutoUpdate','Watchdog','Reconfigure')]
   [string]$Action = 'Menu'
 )
 
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
-$Version = '0.5.0'
+$Version = '0.6.0'
 $Repo = 'Stas5252/antigravity-routeguard'
 $Root = Join-Path $env:LOCALAPPDATA 'AGRouteGuard'
 $BackupDir = Join-Path $Root 'backups'
@@ -331,7 +331,7 @@ function Install-Files {
   Copy-IfDifferentPath (Join-Path $PSScriptRoot 'Start-Bridge.ps1') $StartBridge
   Copy-IfDifferentPath $PSCommandPath $InstalledScript
 
-  foreach($name in @('Install.cmd','Launch.cmd','LaunchProduction.cmd','Status.cmd','Restore.cmd','Report.cmd','README.md','THIRD_PARTY_NOTICES.md','LICENSE','MANIFEST.sha256','BUILD_COMMIT.txt')){
+  foreach($name in @('Install.cmd','Launch.cmd','LaunchProduction.cmd','Accounts.cmd','AccountSwap.ps1','Status.cmd','Restore.cmd','Report.cmd','README.md','CHANGELOG.md','THIRD_PARTY_NOTICES.md','LICENSE','MANIFEST.sha256','BUILD_COMMIT.txt')){
     $src=Join-Path $PSScriptRoot $name
     if(Test-Path -LiteralPath $src){ Copy-IfDifferentPath $src (Join-Path $Root $name) }
   }
@@ -1569,12 +1569,12 @@ function Do-Update([switch]$Automatic) {
     $unpack = Join-Path $temp 'unpack'
     Expand-Archive $zip $unpack -Force
     Test-ManifestAt -BaseDir $unpack -Quiet | Out-Null
-    foreach($name in @('AGRouteGuard.ps1','agbridge.exe','version.dll','Start-Bridge.ps1','Launch.cmd','Status.cmd','Restore.cmd','Report.cmd','MANIFEST.sha256','BUILD_COMMIT.txt')){
+    foreach($name in @('AGRouteGuard.ps1','agbridge.exe','version.dll','Start-Bridge.ps1','Launch.cmd','Accounts.cmd','AccountSwap.ps1','Status.cmd','Restore.cmd','Report.cmd','MANIFEST.sha256','BUILD_COMMIT.txt')){
       if(!(Test-Path (Join-Path $unpack $name))){ throw "Release package missing $name" }
     }
 
     Stop-BridgeNow
-    foreach($name in @('AGRouteGuard.ps1','agbridge.exe','version.dll','Start-Bridge.ps1','Install.cmd','Launch.cmd','LaunchProduction.cmd','Status.cmd','Restore.cmd','Report.cmd','README.md','THIRD_PARTY_NOTICES.md','LICENSE','MANIFEST.sha256','BUILD_COMMIT.txt')){
+    foreach($name in @('AGRouteGuard.ps1','agbridge.exe','version.dll','Start-Bridge.ps1','Install.cmd','Launch.cmd','LaunchProduction.cmd','Accounts.cmd','AccountSwap.ps1','Status.cmd','Restore.cmd','Report.cmd','README.md','CHANGELOG.md','THIRD_PARTY_NOTICES.md','LICENSE','MANIFEST.sha256','BUILD_COMMIT.txt')){
       $src=Join-Path $unpack $name
       if(Test-Path -LiteralPath $src){ Copy-Item $src (Join-Path $Root $name) -Force }
     }
@@ -1638,6 +1638,14 @@ function Do-LaunchProduction {
   Start-RouteGuardAntigravity -ProductionBackend
 }
 
+function Do-Accounts {
+  $helper=Join-Path $Root 'AccountSwap.ps1'
+  if(!(Test-Path -LiteralPath $helper)){ $helper=Join-Path $PSScriptRoot 'AccountSwap.ps1' }
+  if(!(Test-Path -LiteralPath $helper)){ throw 'AccountSwap.ps1 is missing. Update RouteGuard first.' }
+  & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $helper
+  if($LASTEXITCODE -ne 0){ exit $LASTEXITCODE }
+}
+
 function Do-Report {
   Ensure-Root
   $stamp=Get-Date -Format 'yyyyMMdd-HHmmss'
@@ -1664,7 +1672,7 @@ function Do-Report {
 function Menu {
   Write-Host ''
   Say "AG RouteGuard v$Version" 'Magenta'
-  Write-Host '1) Setup   2) Repair   3) Status   4) Reconfigure proxy   5) Update   6) Restore   7) Report   8) Launch   9) Launch production backend   0) Exit'
+  Write-Host '1) Setup   2) Repair   3) Status   4) Reconfigure proxy   5) Update   6) Restore   7) Report   8) Launch   9) Launch production backend   10) Accounts   0) Exit'
   switch(Read-Host 'Choose'){
     '1'{Do-Setup}
     '2'{Do-Repair}
@@ -1675,6 +1683,7 @@ function Menu {
     '7'{Do-Report}
     '8'{Do-Launch}
     '9'{Do-LaunchProduction}
+    '10'{Do-Accounts}
     default{ }
   }
 }
@@ -1686,6 +1695,7 @@ switch($Action){
   'Report'{Do-Report}
   'Launch'{Do-Launch}
   'LaunchProduction'{Do-LaunchProduction}
+  'Accounts'{Do-Accounts}
   'Restore'{Do-Restore}
   'Update'{Do-Update}
   'AutoUpdate'{Do-Update -Automatic}
