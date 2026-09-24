@@ -49,7 +49,7 @@ For the gate fallback, Windows NRPT points only `cloudcode-pa.googleapis.com` an
 - routes TCP 80/443 through one local SOCKS5 bridge;
 - blocks UDP/QUIC fallback and native IPv6 in target processes to reduce direct egress leaks; ordinary DNS uses the system resolver for compatibility, while the two CloudCode gate names retain the separate RouteGuard NRPT/tunnel fallback;
 - supports authenticated SOCKS5 upstream proxies and retries transient upstream SOCKS connection/auth failures before failing a new agent request;
-- stores the upstream password using Windows DPAPI for the current Windows user;
+- stores the upstream password using Windows DPAPI for the current Windows user and removes proxy credentials from the long-running bridge process environment immediately after startup;
 - verifies the real proxy egress three times before patching and rejects rotating/changing egress;
 - verifies TLS connectivity through that same proxy to `oauth2.googleapis.com`, `cloudcode-pa.googleapis.com`, and `daily-cloudcode-pa.googleapis.com` before Setup/Repair;
 - patches the known IDE `isGoogleInternal` local gate when its exact pattern is present and includes that IDE state in watchdog/post-install verification;
@@ -59,7 +59,9 @@ For the gate fallback, Windows NRPT points only `cloudcode-pa.googleapis.com` an
 - starts the bridge at Windows logon;
 - runs a watchdog every 5 minutes: it checks the hook, config, native eligibility state, IDE local gate, and private `AG_LS_PROXY` channel; if an Antigravity update removes/replaces a known patch, RouteGuard marks a repair pending while Antigravity is running and applies it only after Antigravity is closed, so an active agent run is not killed;
 - checks the rolling RouteGuard release periodically, verifies `SHA256SUMS.txt`, and auto-updates only while Antigravity is closed; otherwise the update is deferred safely;
-- can self-update from GitHub Releases and verifies the release ZIP against `SHA256SUMS.txt` before installing;
+- can self-update from GitHub Releases, verifies the outer ZIP with `SHA256SUMS.txt`, then verifies every packaged file against the inner `MANIFEST.sha256` before replacing installed files;
+- stamps each release with its immutable Git commit so the updater can tell exactly which rolling build is installed;
+- keeps `Launch.cmd`, `Status.cmd`, `Report.cmd`, `Restore.cmd` and the other helpers in the persistent `%LOCALAPPDATA%\AGRouteGuard` install so auto-update updates the tools the user actually runs;
 - validates the effective managed network policy on every watchdog/status pass and shows whether the newest Antigravity `ls-main.log` still contains the Google location-400 error;
 - GitHub Actions builds the Windows x64 package from source and publishes SHA-256 checksums.
 
