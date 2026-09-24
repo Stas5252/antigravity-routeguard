@@ -130,6 +130,13 @@ func localTargetAllowed(target string) bool {
 
 func main() {
     c := envCfg()
+    // Credentials arrive from the short-lived launcher process. Drop them from
+    // this process environment immediately after copying them into memory so
+    // routine child-process/environment inspection does not expose the proxy
+    // password for the lifetime of the bridge.
+    _ = os.Unsetenv("AG_UPSTREAM_PASS")
+    _ = os.Unsetenv("AG_UPSTREAM_USER")
+
     if err := validateConfig(c); err != nil {
         log.Fatal(err)
     }
@@ -763,7 +770,7 @@ func checkIPVia(c cfg, host, path string) (string, error) {
         return "", err
     }
     req.Host = host
-    req.Header.Set("User-Agent", "AGRouteGuard/0.4")
+    req.Header.Set("User-Agent", "AGRouteGuard/0.5")
     req.Header.Set("Accept", "text/plain")
     req.Header.Set("Accept-Encoding", "identity")
     req.Close = true
