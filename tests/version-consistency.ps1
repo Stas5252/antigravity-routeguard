@@ -9,7 +9,7 @@ $script = Get-Content $scriptPath -Raw
 $readme = Get-Content $readmePath -Raw
 $layer = Get-Content $layerPath -Raw
 
-$m = [regex]::Match($script, "\$Version\s*=\s*'([^']+)'")
+$m = [regex]::Match($script, '\$Version\s*=\s*''([^'']+)''')
 if(-not $m.Success){ throw 'Could not read $Version from AGRouteGuard.ps1' }
 $version = $m.Groups[1].Value
 
